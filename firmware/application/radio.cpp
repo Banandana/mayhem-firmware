@@ -90,6 +90,18 @@ static constexpr SPIConfig ssp_config_max5864 = {
     .cpsr = ssp1_cpsr,
 };
 
+#ifdef PRALINE
+/* FPGA (iCE40) uses 8-bit SPI Mode 3 (CPOL=1, CPHA=1) */
+static constexpr SPIConfig ssp_config_fpga = {
+    .end_cb = NULL,
+    .ssport = gpio_fpga_select.port(),
+    .sspad = gpio_fpga_select.pad(),
+    .cr0 =
+        CR0_CLOCKRATE(ssp_scr(ssp1_pclk_f, ssp1_cpsr, max5864_spi_f)) | CR0_FRFSPI | CR0_DSS8BIT | CR0_CPOL | CR0_CPHA,
+    .cpsr = ssp1_cpsr,
+};
+#endif
+
 static spi::arbiter::Arbiter ssp1_arbiter(portapack::ssp1);
 
 static spi::arbiter::Target ssp1_target_max283x{
@@ -99,6 +111,12 @@ static spi::arbiter::Target ssp1_target_max283x{
 static spi::arbiter::Target ssp1_target_max5864{
     ssp1_arbiter,
     ssp_config_max5864};
+
+#ifdef PRALINE
+static spi::arbiter::Target ssp1_target_fpga{
+    ssp1_arbiter,
+    ssp_config_fpga};
+#endif
 
 static rf::path::Path rf_path;
 rffc507x::RFFC507x first_if;
@@ -133,7 +151,14 @@ void init() {
     first_if.init();
     second_if->init();
     baseband_codec.init();
+#ifndef PRALINE
+    /* HackRF One uses CPLD for Q inversion control.
+     * PRALINE uses FPGA and the pin (P2_3) is used for LCD_TE on H4M. */
     baseband_cpld.init();
+#else
+    /* Initialize FPGA registers - DC_BLOCK must be enabled for RX */
+    debug::fpga::init();
+#endif
 }
 
 void set_direction(const rf::Direction new_direction) {
@@ -167,7 +192,9 @@ void set_direction(const rf::Direction new_direction) {
          */
         baseband_invert = false;
     }
+#ifndef PRALINE
     baseband_cpld.set_invert(mixer_invert ^ baseband_invert);
+#endif
 
     second_if->set_mode((direction == rf::Direction::Transmit) ? max283x::Mode::Transmit : max283x::Mode::Receive);
     rf_path.set_direction(direction);
@@ -220,7 +247,9 @@ bool set_tuning_frequency(const rf::Frequency frequency) {
 
         rf_path.set_band(tuning_config.rf_path_band);
         mixer_invert = tuning_config.mixer_invert;
+#ifndef PRALINE
         baseband_cpld.set_invert(mixer_invert ^ baseband_invert);
+#endif
 
         return result_second_if;
     } else {
@@ -328,6 +357,142 @@ int8_t temp_sense() {
 }
 
 } /* namespace second_if */
+
+#ifdef PRALINE
+namespace fpga {
+
+// Direct SSP1 register access - bypassing ChibiOS driver entirely
+// This matches the approach used in fpga_bridge.c during early boot
+
+// SSP1 register addresses
+#define SSP1_BASE       0x400C5000
+#define SSP1_CR0        (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x000))
+#define SSP1_CR1        (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x004))
+#define SSP1_DR         (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x008))
+#define SSP1_SR         (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x00C))
+#define SSP1_CPSR       (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x010))
+
+// SSP status bits
+#define SSP_SR_TNF      (1 << 1)  // TX FIFO not full
+#define SSP_SR_RNE      (1 << 2)  // RX FIFO not empty
+#define SSP_SR_BSY      (1 << 4)  // Busy
+
+// GPIO direct access for chip select (GPIO2[10])
+#define GPIO_PORT2_SET  (*reinterpret_cast<volatile uint32_t*>(0x400F4000 + 0x2200 + 2*4))
+#define GPIO_PORT2_CLR  (*reinterpret_cast<volatile uint32_t*>(0x400F4000 + 0x2280 + 2*4))
+#define GPIO_PORT2_DIR  (*reinterpret_cast<volatile uint32_t*>(0x400F4000 + 0x2000 + 2*4))
+#define FPGA_CS_BIT     (1 << 10)
+
+static void fpga_cs_high() {
+    GPIO_PORT2_SET = FPGA_CS_BIT;
+}
+
+static void fpga_cs_low() {
+    GPIO_PORT2_CLR = FPGA_CS_BIT;
+}
+
+static void fpga_cs_output() {
+    GPIO_PORT2_DIR |= FPGA_CS_BIT;
+}
+
+// Transfer one byte via SSP1, return received byte
+static uint8_t ssp1_transfer_byte(uint8_t data) {
+    // Wait for TX FIFO not full
+    while ((SSP1_SR & SSP_SR_TNF) == 0) {}
+    SSP1_DR = data;
+    // Wait for not busy
+    while (SSP1_SR & SSP_SR_BSY) {}
+    // Wait for RX FIFO not empty
+    while ((SSP1_SR & SSP_SR_RNE) == 0) {}
+    return SSP1_DR;
+}
+
+// Configure SSP1 for iCE40 FPGA (Mode 3: CPOL=1, CPHA=1, 8-bit)
+static void ssp1_config_fpga_mode() {
+    SSP1_CR1 = 0;  // Disable SSP1
+    // Mode 3: CPOL=1 (bit 6), CPHA=1 (bit 7), 8-bit (DSS=7), SCR=21
+    SSP1_CR0 = 7 | (1 << 6) | (1 << 7) | (21 << 8);
+    SSP1_CPSR = 2;  // Clock prescaler
+    SSP1_CR1 = (1 << 1);  // Enable SSP1
+}
+
+// Configure SSP1 back for MAX2831 (Mode 0: CPOL=0, CPHA=0, 9-bit)
+static void ssp1_config_max2831_mode() {
+    SSP1_CR1 = 0;  // Disable SSP1
+    // Mode 0: CPOL=0, CPHA=0, 9-bit (DSS=8), SCR=24
+    SSP1_CR0 = 8 | (24 << 8);
+    SSP1_CPSR = 2;
+    SSP1_CR1 = (1 << 1);  // Enable SSP1
+}
+
+uint32_t register_read(const size_t register_number) {
+    if (register_number == 0 || register_number > 5) return 0xFF;
+
+    // Ensure CS is output and deselected
+    fpga_cs_output();
+    fpga_cs_high();
+
+    // Switch to FPGA SPI mode
+    ssp1_config_fpga_mode();
+
+    // CS low
+    fpga_cs_low();
+
+    // SPI protocol: [reg & 0x7F, 0x00, 0x00] -> value in byte 3
+    ssp1_transfer_byte(register_number & 0x7F);
+    ssp1_transfer_byte(0x00);
+    uint8_t value = ssp1_transfer_byte(0x00);
+
+    // CS high
+    fpga_cs_high();
+
+    // Switch back to MAX2831 mode
+    ssp1_config_max2831_mode();
+
+    return value;
+}
+
+void register_write(const size_t register_number, uint32_t value) {
+    if (register_number == 0 || register_number > 5) return;
+
+    // Ensure CS is output and deselected
+    fpga_cs_output();
+    fpga_cs_high();
+
+    // Switch to FPGA SPI mode
+    ssp1_config_fpga_mode();
+
+    // CS low
+    fpga_cs_low();
+
+    // SPI protocol: [(reg | 0x80), value, 0x00]
+    ssp1_transfer_byte((register_number & 0x7F) | 0x80);
+    ssp1_transfer_byte(value);
+    ssp1_transfer_byte(0x00);
+
+    // CS high
+    fpga_cs_high();
+
+    // Switch back to MAX2831 mode
+    ssp1_config_max2831_mode();
+}
+
+void init() {
+    // Configure FPGA CS GPIO as output, initially deselected
+    fpga_cs_output();
+    fpga_cs_high();
+
+    // Initialize FPGA registers after bitstream load
+    // DC_BLOCK (bit 0) must be enabled for RX to work
+    register_write(1, 0x01);  // CTRL: DC_BLOCK=1
+    register_write(2, 0x00);  // RX_DECIM: no decimation
+    register_write(3, 0x00);  // TX_CTRL: NCO disabled
+    register_write(4, 0x00);  // TX_INTRP: no interpolation
+    register_write(5, 0x00);  // TX_PSTEP: zero phase step
+}
+
+} /* namespace fpga */
+#endif
 
 } /* namespace debug */
 

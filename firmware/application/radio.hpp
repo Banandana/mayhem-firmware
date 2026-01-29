@@ -81,6 +81,16 @@ int8_t temp_sense();
 
 } /* namespace second_if */
 
+#ifdef PRALINE
+namespace fpga {
+
+uint32_t register_read(const size_t register_number);
+void register_write(const size_t register_number, uint32_t value);
+void init();
+
+} /* namespace fpga */
+#endif
+
 } /* namespace debug */
 
 } /* namespace radio */

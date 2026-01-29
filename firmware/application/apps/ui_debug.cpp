@@ -148,6 +148,10 @@ uint32_t RegistersWidget::reg_read(const uint32_t register_number) {
             }
             case CT_AUDIO:
                 return audio::debug::reg_read(register_number);
+#ifdef PRALINE
+            case CT_FPGA:
+                return radio::debug::fpga::register_read(register_number);
+#endif
         }
     }
     return 0xFFFF;
@@ -175,6 +179,11 @@ void RegistersWidget::reg_write(const uint32_t register_number, const uint32_t v
             case CT_AUDIO:
                 audio::debug::reg_write(register_number, value);
                 break;
+#ifdef PRALINE
+            case CT_FPGA:
+                radio::debug::fpga::register_write(register_number, value);
+                break;
+#endif
         }
     }
 }
@@ -387,6 +396,7 @@ void DebugPeripheralsMenuView::on_populate() {
         {"RFFC5072", Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_peripherals_details, [this]() { nav_.push<RegistersView>("RFFC5072", RegistersWidgetConfig{CT_RFFC5072, 31, 31, 16}); }},
 #ifdef PRALINE
         {max283x, Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_peripherals_details, [this, max283x]() { nav_.push<RegistersView>(max283x, RegistersWidgetConfig{CT_MAX283X, 16, 16, 14}); }},
+        {"FPGA", Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_peripherals_details, [this]() { nav_.push<RegistersView>("FPGA (iCE40)", RegistersWidgetConfig{CT_FPGA, 6, 6, 8}); }},
 #else
         {max283x, Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_peripherals_details, [this, max283x]() { nav_.push<RegistersView>(max283x, RegistersWidgetConfig{CT_MAX283X, 32, 32, 10}); }},
 #endif

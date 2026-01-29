@@ -864,6 +864,12 @@ extern "C" void boardInit(void) {
 
   /* 4. HackRF Pro Specific: Initialize and Load FPGA */
 #ifdef PRALINE
+  /* Enable 3.3V aux power - P6_7 = GPIO5[15], active LOW (clear to enable) */
+  LPC_SCU->SFSP[6][7] = 0xF4;  /* SCU_GPIO_FAST | FUNCTION4 */
+  LPC_GPIO->DIR[5] |= (1 << 15);
+  LPC_GPIO->CLR[5] = (1 << 15);  /* Clear = enable 3.3V aux */
+  { volatile uint32_t delay = 100000; while(delay--); }
+
   /* Enable 1.2V for FPGA - P8_7 = GPIO4[7], active high */
   LPC_SCU->SFSP[8][7] = 0x10;
   LPC_GPIO->DIR[4] |= (1 << 7);
@@ -907,6 +913,46 @@ extern "C" void boardInit(void) {
   LPC_GPIO->CLR[7] = (1 << 2);  /* Start in shutdown mode */
   LPC_GPIO->DIR[7] |= (1 << 2);  /* Output */
 
+  /* Configure Port 6 pins for RF path control */
+  /* P6_3 = GPIO3[2] Mixer enable (inverted: 0 = mixer ON) */
+  LPC_SCU->SFSP[6][3] = 0xF0;  /* SCU_GPIO_FAST | FUNCTION0 */
+  LPC_GPIO->CLR[3] = (1 << 2);  /* Mixer enabled by default */
+  LPC_GPIO->DIR[3] |= (1 << 2);  /* Output */
+  /* P6_5 = GPIO3[4] TX enable */
+  LPC_SCU->SFSP[6][5] = 0xF0;  /* SCU_GPIO_FAST | FUNCTION0 */
+  LPC_GPIO->CLR[3] = (1 << 4);  /* TX off by default (RX mode) */
+  LPC_GPIO->DIR[3] |= (1 << 4);  /* Output */
+
+  /* Configure Port A pins for RF path control */
+  /* PA_1 = GPIO4[8] LPF enable */
+  LPC_SCU->SFSP[0xA][1] = 0xF4;  /* SCU_GPIO_FAST | FUNCTION4 */
+  LPC_GPIO->SET[4] = (1 << 8);  /* LPF enabled by default (low band) */
+  LPC_GPIO->DIR[4] |= (1 << 8);  /* Output */
+  /* PA_2 = GPIO4[9] RF amp enable */
+  LPC_SCU->SFSP[0xA][2] = 0xF4;  /* SCU_GPIO_FAST | FUNCTION4 */
+  LPC_GPIO->CLR[4] = (1 << 9);  /* RF amp off by default */
+  LPC_GPIO->DIR[4] |= (1 << 9);  /* Output */
+
+  /* Configure PRALINE-specific SGPIO pins for FPGA sample interface.
+   * These override the HackRF One pin config from pins_setup.
+   * PRALINE uses different pins than HackRF One for SGPIO4/8/9/10.
+   * SCU_GPIO_FAST = 0xF0 (EPUN + EHS + EZI + ZIF)
+   */
+  /* SGPIO4 = P9_4 function 6 (HOST_DATA4) */
+  LPC_SCU->SFSP[9][4] = 0xF6;  /* SCU_GPIO_FAST | func 6 */
+  /* SGPIO8 = P8_0 function 4 (SGPIO_CLK - clock from FPGA) */
+  LPC_SCU->SFSP[8][0] = 0xF4;  /* SCU_GPIO_FAST | func 4 */
+  /* SGPIO9 = P9_3 function 6 (HOST_CAPTURE) */
+  LPC_SCU->SFSP[9][3] = 0xF6;  /* SCU_GPIO_FAST | func 6 */
+  /* SGPIO10 = P8_2 function 4 (HOST_DISABLE - output to FPGA) */
+  LPC_SCU->SFSP[8][2] = 0xF4;  /* SCU_GPIO_FAST | func 4 */
+  /* SGPIO11 = P1_17 function 6 (HOST_DIRECTION - output to FPGA, tells FPGA TX vs RX) */
+  LPC_SCU->SFSP[1][17] = 0xF6;  /* SCU_GPIO_FAST | func 6 */
+
+  /* NOTE: P9_5 is RFFC5072 mixer clock (SCU_MIXER_SCLK), NOT SGPIO!
+   * P1_15 is SGPIO2/HOST_DATA2, already configured in pins_setup.
+   * Do NOT override these pins here. */
+
   // Trigger FPGA bitstream loading via fpga bridge
   // Attempt to load the FPGA bitstream
   // This function returns LD_SUCCESS (0) if the FPGA confirms the bitstream
@@ -916,16 +962,17 @@ extern "C" void boardInit(void) {
   // LED1 (USB) = GPIO2[1], LED2 (RX) = GPIO2[2], LED3 (TX) = GPIO2[8]
   LPC_GPIO->DIR[2] |= (1 << 1) | (1 << 2) | (1 << 8);
 
-  // Clear all LEDs to start
-  LPC_GPIO->CLR[2] = (1 << 1) | (1 << 2) | (1 << 8);
+  // Turn off all LEDs to start
+  // PRALINE LEDs are active-low: SET (HIGH) = OFF, CLR (LOW) = ON
+  LPC_GPIO->SET[2] = (1 << 1) | (1 << 2) | (1 << 8);
 
   // Call fpga_bridge_init and continue boot regardless of result
   // (Watchdog was resetting device when we halted with while(1))
   int load_result = fpga_bridge_init();
   (void)load_result;  // Ignore result for now, just let boot continue
 
-  // Clear all LEDs and continue
-  LPC_GPIO->CLR[2] = (1 << 1) | (1 << 2) | (1 << 8);
+  // Keep LEDs off after FPGA load
+  LPC_GPIO->SET[2] = (1 << 1) | (1 << 2) | (1 << 8);
 #endif
 
 }

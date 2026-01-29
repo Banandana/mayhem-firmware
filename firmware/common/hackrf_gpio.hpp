@@ -104,6 +104,7 @@ constexpr GPIO gpio_max2839_rxtx = gpio[GPIO2_5];
 
 #ifdef PRALINE
 constexpr GPIO gpio_max5864_select = gpio[GPIO6_30];
+constexpr GPIO gpio_fpga_select = gpio[GPIO2_10];  // FPGA SPI CS (P5_1)
 #else
 constexpr GPIO gpio_max5864_select = gpio[GPIO2_7];
 #endif

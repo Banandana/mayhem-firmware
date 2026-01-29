@@ -321,6 +321,21 @@ void ClockManager::init_clock_generator() {
     }};
     clock_generator.set_clock_control(si5351_clock_control);
 
+#ifdef PRALINE
+    /* PRALINE uses Si5351A with:
+     * CLK0 = AFE_CLK (codec/FPGA sample clock)
+     * CLK1 = SCT_CLK (FPGA timing clock at 2x sample rate)
+     * CLK4 = first IF (RFFC5072)
+     * CLK5 = second IF (MAX2831)
+     * Uses PLLA on XTAL only (no CLKIN support).
+     */
+    clock_generator.write(si5351_pll_a_xtal_reg);
+    clock_generator.write(si5351c_ms_0_8m_reg);     /* CLK0: AFE_CLK (codec) */
+    clock_generator.write(si5351c_ms_1_group_reg);  /* CLK1: SCT_CLK (FPGA timing) */
+    clock_generator.write(si5351c_ms_4_reg);        /* CLK4: first IF */
+    clock_generator.write(si5351c_ms_5_reg);        /* CLK5: second IF */
+    clock_generator.write(si5351a_ms6_7_off_reg);
+#else
     if (hackrf_r9) {
         const PLLReg pll_reg = (reference.source == ReferenceSource::Xtal)
                                    ? si5351_pll_a_xtal_reg
@@ -341,6 +356,7 @@ void ClockManager::init_clock_generator() {
         clock_generator.write(si5351c_ms_5_reg);
         clock_generator.write(si5351c_ms6_7_off_mcu_clkin_reg);
     }
+#endif
 
     clock_generator.reset_plls();
 
@@ -426,6 +442,15 @@ void ClockManager::shutdown() {
 }
 
 void ClockManager::enable_codec_clocks() {
+#ifdef PRALINE
+    /* PRALINE: CLK0 (AFE_CLK) for codec/FPGA, CLK1 (SCT_CLK) for FPGA timing.
+     * Reference hackrf_core.c shows PRALINE needs both CLK0 and CLK1. */
+    clock_generator.enable_clock(clock_generator_output_og_codec);  /* CLK0 */
+    clock_generator.enable_clock(clock_generator_output_og_cpld);   /* CLK1 */
+    clock_generator.enable_output_mask(
+        (1U << clock_generator_output_og_codec) |
+        (1U << clock_generator_output_og_cpld));
+#else
     if (hackrf_r9) {
         clock_generator.enable_clock(clock_generator_output_r9_sgpio);
     } else {
@@ -443,6 +468,7 @@ void ClockManager::enable_codec_clocks() {
         clock_generator.enable_output_mask(
             (1U << clock_generator_output_og_codec) | (1U << clock_generator_output_og_cpld) | (1U << clock_generator_output_og_sgpio));
     }
+#endif
 }
 
 void ClockManager::disable_codec_clocks() {
@@ -450,6 +476,14 @@ void ClockManager::disable_codec_clocks() {
      * be enabled for the output to come to rest at the state specified by
      * CLKx_DISABLE_STATE.
      */
+#ifdef PRALINE
+    /* PRALINE: CLK0 (AFE_CLK) and CLK1 (SCT_CLK) used for codec/FPGA */
+    clock_generator.disable_output_mask(
+        (1U << clock_generator_output_og_codec) |
+        (1U << clock_generator_output_og_cpld));
+    clock_generator.disable_clock(clock_generator_output_og_codec);
+    clock_generator.disable_clock(clock_generator_output_og_cpld);
+#else
     if (hackrf_r9) {
         clock_generator.disable_output_mask(1U << clock_generator_output_r9_sgpio);
         clock_generator.disable_clock(clock_generator_output_r9_sgpio);
@@ -460,9 +494,17 @@ void ClockManager::disable_codec_clocks() {
         clock_generator.disable_clock(clock_generator_output_og_cpld);
         clock_generator.disable_clock(clock_generator_output_og_sgpio);
     }
+#endif
 }
 
 void ClockManager::enable_if_clocks() {
+#ifdef PRALINE
+    /* PRALINE uses CLK4 (first IF) and CLK5 (second IF) like original HackRF One */
+    clock_generator.enable_clock(clock_generator_output_og_first_if);
+    clock_generator.enable_output_mask(1U << clock_generator_output_og_first_if);
+    clock_generator.enable_clock(clock_generator_output_og_second_if);
+    clock_generator.enable_output_mask(1U << clock_generator_output_og_second_if);
+#else
     if (hackrf_r9) {
         clock_generator.enable_clock(clock_generator_output_r9_if);
         clock_generator.enable_output_mask(1U << clock_generator_output_r9_if);
@@ -472,9 +514,16 @@ void ClockManager::enable_if_clocks() {
         clock_generator.enable_clock(clock_generator_output_og_second_if);
         clock_generator.enable_output_mask(1U << clock_generator_output_og_second_if);
     }
+#endif
 }
 
 void ClockManager::disable_if_clocks() {
+#ifdef PRALINE
+    clock_generator.disable_output_mask(1U << clock_generator_output_og_first_if);
+    clock_generator.disable_clock(clock_generator_output_og_first_if);
+    clock_generator.disable_output_mask(1U << clock_generator_output_og_second_if);
+    clock_generator.disable_clock(clock_generator_output_og_second_if);
+#else
     if (hackrf_r9) {
         clock_generator.disable_output_mask(1U << clock_generator_output_r9_if);
         clock_generator.disable_clock(clock_generator_output_r9_if);
@@ -484,6 +533,7 @@ void ClockManager::disable_if_clocks() {
         clock_generator.disable_output_mask(1U << clock_generator_output_og_second_if);
         clock_generator.disable_clock(clock_generator_output_og_second_if);
     }
+#endif
 }
 
 void ClockManager::set_sampling_frequency(const uint32_t frequency) {
@@ -492,11 +542,18 @@ void ClockManager::set_sampling_frequency(const uint32_t frequency) {
      * necessary to change the MS0 synth frequency, and ensure the output
      * is divided by two.
      */
+#ifdef PRALINE
+    /* PRALINE: CLK0 (AFE_CLK) at sample_rate (r_div=1 divides by 2)
+     *          CLK1 (SCT_CLK) at 2x sample_rate (r_div=0, no division) */
+    clock_generator.set_ms_frequency(clock_generator_output_og_codec, frequency * 2, si5351_vco_f, 1);
+    clock_generator.set_ms_frequency(clock_generator_output_og_cpld, frequency * 2, si5351_vco_f, 0);
+#else
     if (hackrf_r9) {
         clock_generator.set_ms_frequency(clock_generator_output_r9_sgpio, frequency * 2, si5351_vco_f, 0);
     } else {
         clock_generator.set_ms_frequency(clock_generator_output_og_codec, frequency * 2, si5351_vco_f, 1);
     }
+#endif
 }
 
 void ClockManager::set_reference_ppb(const int32_t ppb) {

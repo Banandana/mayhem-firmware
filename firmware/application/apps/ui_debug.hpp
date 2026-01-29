@@ -93,6 +93,9 @@ typedef enum {
     CT_SI5351,
     CT_AUDIO,
     CT_MAX17055,
+#ifdef PRALINE
+    CT_FPGA,
+#endif
 } chip_type_t;
 
 struct RegistersWidgetConfig {

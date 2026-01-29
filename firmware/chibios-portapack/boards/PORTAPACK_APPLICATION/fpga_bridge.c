@@ -215,6 +215,114 @@
       return (GPIO_PIN(FPGA_CDONE_PORT) & (1 << FPGA_CDONE_PIN)) != 0;
   }
 
+  // ============================================================================
+  // FPGA Register Access via SPI (iCE40)
+  // ============================================================================
+  // These functions allow reading/writing FPGA internal registers via SPI.
+  // The FPGA bitstream implements a simple SPI register interface.
+  //
+  // FPGA Register Map:
+  //   Reg 1 (CTRL):    DC_BLOCK(b0), QUARTER_SHIFT_EN(b1), QUARTER_SHIFT_UP(b2), PRBS(b6), TRIGGER_EN(b7)
+  //   Reg 2 (RX_DECIM): Decimation ratio [2:0]
+  //   Reg 3 (TX_CTRL):  NCO_EN(b0)
+  //   Reg 4 (TX_INTRP): Interpolation ratio [2:0]
+  //   Reg 5 (TX_PSTEP): NCO phase step [7:0]
+  //
+  // SPI Protocol:
+  //   Read:  Send [reg & 0x7F, 0x00, 0x00] -> value in byte 3
+  //   Write: Send [(reg | 0x80), value, 0x00]
+
+  // Configure SSP1 for iCE40 FPGA register access (Mode 3, 8-bit)
+  static void ssp1_set_mode_ice40(void) {
+      SSP1_CR1_LOCAL = 0;  // Disable SSP1
+      SSP1_CR0_LOCAL = SSP_CR0_DSS_8BIT | SSP_CR0_FRF_SPI | SSP_CR0_CPOL | SSP_CR0_CPHA | (21 << 8);
+      SSP1_CPSR_LOCAL = 2;
+      SSP1_CR1_LOCAL = SSP_CR1_SSE;  // Enable SSP1
+  }
+
+  // Configure SSP1 back to MAX2831 mode (Mode 0, 9-bit)
+  static void ssp1_set_mode_max2831(void) {
+      SSP1_CR1_LOCAL = 0;  // Disable SSP1
+      SSP1_CR0_LOCAL = (0x08) |           // 9-bit data (DSS = 0x08)
+                       (0x00) |           // SPI frame format
+                       (0 << 6) |         // CPOL = 0 (Mode 0)
+                       (0 << 7) |         // CPHA = 0 (Mode 0)
+                       (21 << 8);         // SCR = 21
+      SSP1_CPSR_LOCAL = 2;
+      SSP1_CR1_LOCAL = SSP_CR1_SSE;  // Enable SSP1
+  }
+
+  // Read an FPGA register via SPI
+  static uint8_t fpga_spi_read(uint8_t reg) {
+      uint8_t value;
+      fpga_cs_low();
+      ssp1_transfer_byte(reg & 0x7F);  // Clear MSB for read
+      ssp1_transfer_byte(0x00);         // Dummy byte
+      value = ssp1_transfer_byte(0x00); // Read value
+      fpga_cs_high();
+      return value;
+  }
+
+  // Write an FPGA register via SPI
+  static void fpga_spi_write(uint8_t reg, uint8_t value) {
+      fpga_cs_low();
+      ssp1_transfer_byte((reg & 0x7F) | 0x80);  // Set MSB for write
+      ssp1_transfer_byte(value);
+      ssp1_transfer_byte(0x00);  // Dummy byte
+      fpga_cs_high();
+  }
+
+  // Initialize FPGA registers after bitstream load
+  // This is equivalent to fpga_init() in the reference HackRF firmware
+  static void fpga_register_init(void) {
+      // Already in iCE40 mode after programming, so we can directly access registers
+
+      // Register 1 (CTRL): Enable DC block (bit 0), disable everything else
+      // DC_BLOCK is CRITICAL for RX to work!
+      fpga_spi_write(1, 0x01);  // DC_BLOCK = 1
+
+      // Register 2 (RX_DECIM): No decimation
+      fpga_spi_write(2, 0x00);
+
+      // Register 3 (TX_CTRL): Disable NCO
+      fpga_spi_write(3, 0x00);
+
+      // Register 4 (TX_INTRP): No interpolation
+      fpga_spi_write(4, 0x00);
+
+      // Register 5 (TX_PSTEP): Zero phase step
+      fpga_spi_write(5, 0x00);
+  }
+
+  // Cached register values for debug reads (since reads may require mode switch)
+  static uint8_t fpga_reg_cache[6] = {0, 0x01, 0x00, 0x00, 0x00, 0x00};
+  static uint8_t fpga_reg_cache_valid = 0;
+
+  // Public function to read FPGA register (callable from C++ application code)
+  // Switches SPI mode, reads register, switches back
+  uint8_t fpga_debug_register_read(uint8_t reg) {
+      if (reg == 0 || reg > 5) return 0xFF;
+
+      uint8_t value;
+      ssp1_set_mode_ice40();
+      value = fpga_spi_read(reg);
+      ssp1_set_mode_max2831();
+
+      fpga_reg_cache[reg] = value;
+      return value;
+  }
+
+  // Public function to write FPGA register (callable from C++ application code)
+  void fpga_debug_register_write(uint8_t reg, uint8_t value) {
+      if (reg == 0 || reg > 5) return;
+
+      ssp1_set_mode_ice40();
+      fpga_spi_write(reg, value);
+      ssp1_set_mode_max2831();
+
+      fpga_reg_cache[reg] = value;
+  }
+
   // SPIFI-based read callback for LZ4 decompression
   // Reads from SPIFI memory-mapped address instead of using SPI flash driver
   static size_t spifi_fpga_read_block_cb(void* _ctx, uint8_t* out_buffer) {
@@ -288,6 +396,9 @@
 
       // Check CDONE status
       bool success = fpga_cdone_read();
+
+      // NOTE: FPGA register initialization is done later in radio::init()
+      // The FPGA needs time to stabilize after configuration before accepting register writes
 
       // CRITICAL: Reconfigure SSP1 for MAX2831 (PRALINE RF chip) after FPGA programming
       // iCE40 uses Mode 3 (CPOL=1, CPHA=1), 8-bit
