@@ -382,8 +382,9 @@ class Si5351 {
     }
 
     void reset_plls() {
-        // Datasheet recommends value 0xac, though the low nibble bits are not defined in AN619.
-        write_register(Register::PLLReset, 0xac);
+        // Reset both PLLA and PLLB. Use 0xA0 to match HackRF reference firmware.
+        // The low nibble bits are reserved/undefined in AN619.
+        write_register(Register::PLLReset, 0xa0);
     }
 
     regvalue_t read_register(const uint8_t reg);
@@ -400,6 +401,16 @@ class Si5351 {
 
     void write(const size_t ms_number, const MultisynthFractional& config) {
         write(config.reg(ms_number));
+    }
+
+    /* Write multisynth config using single-byte writes for debugging */
+    void write_ms_single_byte(const size_t ms_number, const MultisynthFractional& config) {
+        const auto regs = config.reg(ms_number);
+        // regs[0] is the base register address, regs[1-8] are the data bytes
+        const uint8_t base_reg = regs[0];
+        for (size_t i = 1; i < regs.size(); i++) {
+            write_register(base_reg + i - 1, regs[i]);
+        }
     }
 
     void set_ms_frequency(

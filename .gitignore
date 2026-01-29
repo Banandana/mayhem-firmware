@@ -84,3 +84,9 @@ venv/
 # TODO: generate bitmap during build, since we use python during build anyway, lemme know if this is a bad idea @zxkmm
 /firmware/tools/bitmap.hpp
 firmware/flashsize.h
+CLAUDE.md
+PLAN.md
+approach2_test_plan.md
+.serena/
+log.log
+cmake.log

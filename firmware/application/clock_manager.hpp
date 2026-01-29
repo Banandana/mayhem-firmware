@@ -72,6 +72,11 @@ class ClockManager {
 
     void set_reference_ppb(const int32_t ppb);
 
+    // Si5351 diagnostic methods
+    uint8_t si5351_read_status() { return clock_generator.device_status(); }
+    uint8_t si5351_read_register(uint8_t reg) { return clock_generator.read_register(reg); }
+    void si5351_write_register(uint8_t reg, uint8_t value) { clock_generator.write_register(reg, value); }
+
     uint32_t get_frequency_monitor_measurement_in_hertz();
 
     Reference get_reference() const;

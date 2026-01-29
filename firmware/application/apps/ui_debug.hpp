@@ -614,16 +614,14 @@ class SGPIO8ClockDetectorView : public View {
     NavigationView& nav_;
 
     Text text_title{{8, 16, 224, 16}, "SGPIO8 Clock Detector"};
-    Text text_lbl_samples{{8, 48, 160, 16}, "Samples (1000):"};
+    Text text_lbl_samples{{8, 48, 160, 16}, "Samples (first 20):"};
     Text text_samples{{8, 64, 224, 16}, "                    "};
     Text text_lbl_toggles{{8, 96, 160, 16}, "Toggle count:"};
-    Text text_toggles{{8, 112, 224, 16}, "                    "};
-    Text text_lbl_freq{{8, 144, 160, 16}, "Est. frequency:"};
-    Text text_freq{{8, 160, 224, 16}, "                    "};
-    Text text_status{{8, 192, 224, 32}, "                              "};
+    Text text_toggles{{8, 112, 224, 16}, "                         "};
+    Text text_status{{8, 144, 224, 32}, "                              "};
 
-    Button button_sample{{8, 252, 96, 24}, "Sample"};
-    Button button_done{{128, 252, 96, 24}, "Done"};
+    Button button_sample{{8, 200, 96, 24}, "Sample"};
+    Button button_done{{128, 200, 96, 24}, "Done"};
 
     void sample_sgpio8();
 };
@@ -632,6 +630,56 @@ class SGPIO8ClockDetectorView : public View {
  * Shows SGPIO slice status: which slices are enabled vs active,
  * counter values, and data capture status.
  */
+
+/* Si5351 Debug View
+ * Dedicated diagnostic tool for Si5351 clock generator.
+ * Shows PLL lock status, clock configurations, and allows testing.
+ */
+class Si5351DebugView : public View {
+   public:
+    Si5351DebugView(NavigationView& nav);
+    void focus() override;
+    std::string title() const override { return "Si5351 Clocks"; };
+
+   private:
+    NavigationView& nav_;
+
+    Text text_title{{8, 16, 200, 16}, "Si5351 Clock Generator"};
+
+    Text text_status_label{{8, 40, 80, 16}, "Status Reg:"};
+    Text text_status_value{{96, 40, 144, 16}, ""};
+
+    Text text_pll_a_label{{8, 60, 80, 16}, "PLL A:"};
+    Text text_pll_a_status{{96, 60, 144, 16}, ""};
+
+    Text text_pll_b_label{{8, 80, 80, 16}, "PLL B:"};
+    Text text_pll_b_status{{96, 80, 144, 16}, ""};
+
+    Text text_sys_init_label{{8, 100, 80, 16}, "SYS_INIT:"};
+    Text text_sys_init_status{{96, 100, 144, 16}, ""};
+
+    Text text_xtal_cap_label{{8, 120, 80, 16}, "XTAL Cap:"};
+    Text text_xtal_cap_value{{96, 120, 144, 16}, ""};
+
+    Text text_clk0_label{{8, 150, 72, 16}, "CLK0:"};
+    Text text_clk0_status{{88, 150, 152, 16}, ""};
+
+    Text text_clk0_freq_label{{8, 170, 72, 16}, "  Freq:"};
+    Text text_clk0_freq_value{{88, 170, 152, 16}, ""};
+
+    Text text_clk0_div_label{{8, 190, 72, 16}, "  Div:"};
+    Text text_clk0_div_value{{88, 190, 152, 16}, ""};
+
+    Text text_clk1_label{{8, 210, 96, 16}, "CLK1 (SCT):"};
+    Text text_clk1_status{{112, 210, 128, 16}, ""};
+
+    Button button_refresh{{8, 240, 72, 24}, "Refresh"};
+    Button button_reset_pll{{88, 240, 72, 24}, "Reset PLL"};
+    Button button_done{{168, 240, 64, 24}, "Done"};
+
+    void refresh_status();
+    void reset_pll();
+};
 
 class DebugPeripheralsMenuView : public BtnGridView {
    public:

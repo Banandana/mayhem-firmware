@@ -662,16 +662,16 @@ void SGPIOLiveMonitorView::update() {
         text_diag_line1.set_style(Theme::getInstance()->fg_green);
     }
 
-    // Line 2: Clock signal status
-    if (sgpio8_high && !disable_high) {
-        text_diag_line2.set("SGPIO8=HIGH (clock stuck?)");
-        text_diag_line2.set_style(Theme::getInstance()->fg_orange);
-    } else if (!sgpio8_high && !disable_high) {
-        text_diag_line2.set("SGPIO8=LOW (check toggling)");
-        text_diag_line2.set_style(Theme::getInstance()->fg_orange);
-    } else {
+    // Line 2: Clock signal status (snapshot - can't detect toggling)
+    if (disable_high) {
         text_diag_line2.set("Clock N/A (FPGA disabled)");
         text_diag_line2.set_style(Theme::getInstance()->fg_medium);
+    } else if (sgpio8_high) {
+        text_diag_line2.set("SGPIO8=HIGH (snapshot)");
+        text_diag_line2.set_style(Theme::getInstance()->fg_green);
+    } else {
+        text_diag_line2.set("SGPIO8=LOW (snapshot)");
+        text_diag_line2.set_style(Theme::getInstance()->fg_green);
     }
 
     // Line 3: REG_SS[0] capture status
@@ -686,21 +686,24 @@ void SGPIOLiveMonitorView::update() {
         text_diag_line3.set_style(Theme::getInstance()->fg_medium);
     }
 
-    // Line 4: Root cause summary
+    // Line 4: Summary based on key indicators
     if (sgpio8_output) {
         text_diag_line4.set("FIX: Set SGPIO8 to INPUT!");
         text_diag_line4.set_style(Theme::getInstance()->fg_red);
     } else if (disable_high) {
         text_diag_line4.set("FIX: Clear DISABLE bit!");
         text_diag_line4.set_style(Theme::getInstance()->fg_red);
-    } else if (!sgpio8_high || gpio_changing) {
-        text_diag_line4.set("Clock issue - check FPGA");
+    } else if (regss_active && gpio_changing) {
+        text_diag_line4.set("SGPIO capturing data");
+        text_diag_line4.set_style(Theme::getInstance()->fg_green);
+    } else if (!regss_active && gpio_changing) {
+        text_diag_line4.set("Data present, check slices");
         text_diag_line4.set_style(Theme::getInstance()->fg_orange);
     } else if (!regss_active) {
-        text_diag_line4.set("Slice config issue");
+        text_diag_line4.set("No data activity");
         text_diag_line4.set_style(Theme::getInstance()->fg_orange);
     } else {
-        text_diag_line4.set("SGPIO OK, check DMA config");
+        text_diag_line4.set("Check DMA config");
         text_diag_line4.set_style(Theme::getInstance()->fg_green);
     }
 }
@@ -798,6 +801,19 @@ void RadioRxTestView::run_init_test() {
 
     log("set_baseband_rate(8M)...");
     radio::set_baseband_rate(8000000);
+
+    // Read Si5351 status to check PLL lock
+    uint8_t si_status = portapack::clock_manager.si5351_read_status();
+    log("Si5351 status: " + to_string_hex(si_status, 2));
+    if (si_status & 0x20) {
+        log("  WARNING: PLL A unlocked!");
+    } else {
+        log("  PLL A locked OK");
+    }
+
+    // Read crystal cap register
+    uint8_t xtal_cap = portapack::clock_manager.si5351_read_register(183);
+    log("Crystal cap: " + to_string_hex(xtal_cap, 2));
 
     log_registers("[After init]");
     log("Init+clocks done.");
@@ -1175,8 +1191,6 @@ SGPIO8ClockDetectorView::SGPIO8ClockDetectorView(NavigationView& nav)
         &text_samples,
         &text_lbl_toggles,
         &text_toggles,
-        &text_lbl_freq,
-        &text_freq,
         &text_status,
         &button_sample,
         &button_done,
@@ -1201,15 +1215,15 @@ void SGPIO8ClockDetectorView::focus() {
 }
 
 void SGPIO8ClockDetectorView::sample_sgpio8() {
-    // Sample SGPIO8 (bit 8 of GPIO_INREG) 1000 times
-    const int num_samples = 1000;
+    // Sample SGPIO8 (bit 8 of GPIO_INREG) as fast as possible
+    // NOTE: Software sampling cannot accurately measure clock frequency
+    // This only detects presence/absence of clock activity
+    const int num_samples = 2000;
     uint8_t samples[num_samples];
 
+    // Sample as fast as possible
     for (int i = 0; i < num_samples; i++) {
-        uint32_t inreg = LPC_SGPIO->GPIO_INREG;
-        samples[i] = (inreg >> 8) & 1;  // Extract SGPIO8 bit
-        // Small delay between samples
-        for (volatile int j = 0; j < 100; j++) {}
+        samples[i] = (LPC_SGPIO->GPIO_INREG >> 8) & 1;
     }
 
     // Count toggles (transitions 0→1 or 1→0)
@@ -1229,35 +1243,184 @@ void SGPIO8ClockDetectorView::sample_sgpio8() {
 
     // Display toggle count
     text_toggles.set(to_string_dec_uint(toggles) + " / " +
-                     to_string_dec_uint(num_samples - 1));
+                     to_string_dec_uint(num_samples - 1) + " transitions");
 
-    // Estimate frequency (very rough)
-    // Assume ~200 cycles per sample (100 cycle delay + overhead)
-    // At 204 MHz CPU: 200 cycles = ~1 us per sample
-    // 1000 samples = ~1 ms
-    // toggles / 2 = full clock cycles
-    // freq ≈ (toggles / 2) / 1ms = (toggles / 2) kHz
-    int freq_khz = toggles / 2;
-    text_freq.set(to_string_dec_uint(freq_khz) + " kHz (approx)");
-
-    // Status interpretation
-    if (toggles > 900) {
-        text_status.set("CLOCK PRESENT - Fast toggle");
+    // Status interpretation - just presence detection
+    if (toggles > 100) {
+        text_status.set("CLOCK ACTIVE");
         text_status.set_style(Theme::getInstance()->fg_green);
-    } else if (toggles > 100) {
-        text_status.set("CLOCK PRESENT - Slow toggle");
-        text_status.set_style(Theme::getInstance()->fg_green);
-    } else if (toggles > 10) {
-        text_status.set("PARTIAL - Some toggles");
+    } else if (toggles > 0) {
+        text_status.set("SOME ACTIVITY (" + to_string_dec_uint(toggles) + ")");
         text_status.set_style(Theme::getInstance()->fg_orange);
-    } else if (toggles == 0) {
-        text_status.set("NO CLOCK - Stuck at " +
+    } else {
+        text_status.set("NO CLOCK - Stuck " +
                        std::string(samples[0] ? "HIGH" : "LOW"));
         text_status.set_style(Theme::getInstance()->fg_red);
-    } else {
-        text_status.set("QUESTIONABLE - Few toggles");
-        text_status.set_style(Theme::getInstance()->fg_orange);
     }
+}
+
+/* Si5351DebugView *******************************************************/
+
+Si5351DebugView::Si5351DebugView(NavigationView& nav)
+    : nav_(nav) {
+    add_children({&text_title,
+                  &text_status_label,
+                  &text_status_value,
+                  &text_pll_a_label,
+                  &text_pll_a_status,
+                  &text_pll_b_label,
+                  &text_pll_b_status,
+                  &text_sys_init_label,
+                  &text_sys_init_status,
+                  &text_xtal_cap_label,
+                  &text_xtal_cap_value,
+                  &text_clk0_label,
+                  &text_clk0_status,
+                  &text_clk0_freq_label,
+                  &text_clk0_freq_value,
+                  &text_clk0_div_label,
+                  &text_clk0_div_value,
+                  &text_clk1_label,
+                  &text_clk1_status,
+                  &button_refresh,
+                  &button_reset_pll,
+                  &button_done});
+
+    text_title.set_style(Theme::getInstance()->fg_yellow);
+
+    button_refresh.on_select = [this](Button&) {
+        refresh_status();
+    };
+
+    button_reset_pll.on_select = [this](Button&) {
+        reset_pll();
+    };
+
+    button_done.on_select = [&nav](Button&) {
+        nav.pop();
+    };
+
+    // Auto-refresh on load
+    refresh_status();
+}
+
+void Si5351DebugView::focus() {
+    button_refresh.focus();
+}
+
+void Si5351DebugView::refresh_status() {
+    // Read device status register (reg 0)
+    uint8_t status = portapack::clock_manager.si5351_read_status();
+    text_status_value.set("0x" + to_string_hex(status, 2));
+
+    // Decode status bits
+    bool pll_a_locked = !(status & 0x20);  // Bit 5: LOL_A (Loss of Lock A)
+    bool pll_b_locked = !(status & 0x40);  // Bit 6: LOL_B (Loss of Lock B)
+    bool sys_init = (status & 0x80);       // Bit 7: SYS_INIT
+    bool los_clkin = (status & 0x10);      // Bit 4: LOS (Loss of Signal)
+
+    // PLL A status
+    if (pll_a_locked) {
+        text_pll_a_status.set("LOCKED");
+        text_pll_a_status.set_style(Theme::getInstance()->fg_green);
+    } else {
+        text_pll_a_status.set("UNLOCKED");
+        text_pll_a_status.set_style(Theme::getInstance()->fg_red);
+    }
+
+    // PLL B status
+    if (pll_b_locked) {
+        text_pll_b_status.set("LOCKED");
+        text_pll_b_status.set_style(Theme::getInstance()->fg_green);
+    } else {
+        text_pll_b_status.set("UNLOCKED (unused)");
+        text_pll_b_status.set_style(Theme::getInstance()->fg_orange);
+    }
+
+    // SYS_INIT status
+    if (sys_init) {
+        text_sys_init_status.set("IN PROGRESS");
+        text_sys_init_status.set_style(Theme::getInstance()->fg_orange);
+    } else {
+        text_sys_init_status.set("COMPLETE");
+        text_sys_init_status.set_style(Theme::getInstance()->fg_green);
+    }
+
+    // Read crystal load capacitance (reg 183)
+    uint8_t xtal_cap = portapack::clock_manager.si5351_read_register(183);
+    text_xtal_cap_value.set("0x" + to_string_hex(xtal_cap, 2) +
+                            " (" + to_string_dec_uint((xtal_cap >> 6) & 0x03) + ")");
+
+    // Read clock output enables (reg 16-23 control, reg 3 for output enable mask)
+    uint8_t output_enable_mask = portapack::clock_manager.si5351_read_register(3);
+
+    // CLK0 (bit 0 of reg 3, reg 16 for control)
+    uint8_t clk0_ctrl = portapack::clock_manager.si5351_read_register(16);
+    bool clk0_enabled = !(output_enable_mask & 0x01) && !(clk0_ctrl & 0x80);
+    text_clk0_status.set(clk0_enabled ? "ON" : "OFF");
+    text_clk0_status.set_style(clk0_enabled ? Theme::getInstance()->fg_green
+                                            : Theme::getInstance()->fg_red);
+
+    // Read MS0 multisynth parameters (registers 42-49) to calculate actual frequency
+    // Si5351 MS0 Register Layout:
+    // Reg 42: P3[15:8]
+    // Reg 43: P3[7:0]
+    // Reg 44: bits 6:4 = R_DIV[2:0], bits 1:0 = P1[17:16]
+    // Reg 45: P1[15:8]
+    // Reg 46: P1[7:0]
+    // Reg 47: bits 7:4 = P3[19:16], bits 3:0 = P2[19:16]
+    // Reg 48: P2[15:8]
+    // Reg 49: P2[7:0]
+    uint8_t reg44 = portapack::clock_manager.si5351_read_register(44);
+    uint8_t reg45 = portapack::clock_manager.si5351_read_register(45);
+    uint8_t reg46 = portapack::clock_manager.si5351_read_register(46);
+
+    // Decode R divider from bits 6:4 of register 44
+    uint8_t r_div_encoded = (reg44 >> 4) & 0x07;
+    uint32_t r_div = 1 << r_div_encoded;  // R = 2^r_div_encoded
+
+    // Decode P1 (18-bit value): bits 1:0 of reg44 = P1[17:16], reg45 = P1[15:8], reg46 = P1[7:0]
+    uint32_t p1 = ((uint32_t)(reg44 & 0x03) << 16) | ((uint32_t)reg45 << 8) | reg46;
+
+    // Calculate divider: a = (P1 + 512) / 128 for integer dividers (b=0)
+    // Expected for 8 MHz: P1=5888 (0x1700), a=50
+    uint32_t ms_div = (p1 + 512) / 128;  // Integer divider value
+
+    // Calculate frequency: f_out = 800 MHz / ms_div / r_div
+    uint32_t freq_khz = 800000 / ms_div / r_div;  // Result in kHz
+
+    // Show P1 value and R45 for debugging
+    text_clk0_freq_value.set(to_string_dec_uint(freq_khz) + " kHz (P1:" + to_string_hex(p1, 4) + ")");
+    text_clk0_div_value.set("MS=" + to_string_dec_uint(ms_div) +
+                            " R=" + to_string_dec_uint(r_div));
+
+    // Color code based on expected 8 MHz
+    if (freq_khz >= 7900 && freq_khz <= 8100) {
+        text_clk0_freq_value.set_style(Theme::getInstance()->fg_green);
+        text_clk0_div_value.set_style(Theme::getInstance()->fg_green);
+    } else {
+        text_clk0_freq_value.set_style(Theme::getInstance()->fg_red);
+        text_clk0_div_value.set_style(Theme::getInstance()->fg_red);
+    }
+
+    // CLK1 (bit 1 of reg 3, reg 17 for control)
+    uint8_t clk1_ctrl = portapack::clock_manager.si5351_read_register(17);
+    bool clk1_enabled = !(output_enable_mask & 0x02) && !(clk1_ctrl & 0x80);
+    text_clk1_status.set(clk1_enabled ? "ON" : "OFF");
+    text_clk1_status.set_style(clk1_enabled ? Theme::getInstance()->fg_green
+                                            : Theme::getInstance()->fg_red);
+}
+
+void Si5351DebugView::reset_pll() {
+    // Reset both PLLs (write to reg 177)
+    portapack::clock_manager.si5351_read_register(177);  // Read first
+    portapack::clock_manager.si5351_write_register(177, 0xAC);  // Reset both PLLs
+
+    // Small delay for PLL to settle
+    chThdSleepMilliseconds(10);
+
+    // Refresh status to show new lock state
+    refresh_status();
 }
 
 /* DebugPeripheralsMenuView **********************************************/
@@ -1323,6 +1486,7 @@ void DebugMenuView::on_populate() {
         {"Baseband Status", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<BasebandStatusView>(); }},
         {"SGPIO Live", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<SGPIOLiveMonitorView>(); }},
         {"SGPIO8 Clock", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<SGPIO8ClockDetectorView>(); }},
+        {"Si5351 Clocks", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<Si5351DebugView>(); }},
         {"RX Test", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<RadioRxTestView>(); }},
         {"Buttons Test", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_controls, [this]() { nav_.push<DebugControlsView>(); }},
         {"M0 Stack Dump", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_memory, [this]() { stack_dump(); }},
