@@ -894,6 +894,30 @@ extern "C" void boardInit(void) {
   LPC_SCU->SFSP[9][5] = 0xF4;
   LPC_GPIO->DIR[5] |= (1 << 18);  /* Clock as output */
 
+  /* Configure Port D pins for PRALINE (use SFSPD registers) */
+  /* PD_14 = GPIO6[28] MAX2831 chip select */
+  LPC_SCU->SFSPD[14] = 0xF4;  /* SCU_GPIO_FAST | FUNCTION4 */
+  LPC_GPIO->SET[6] = (1 << 28);  /* CS high (inactive) */
+  LPC_GPIO->DIR[6] |= (1 << 28);  /* Output */
+  /* PD_15 = GPIO6[29] MAX2831 RXHP control */
+  LPC_SCU->SFSPD[15] = 0xF4;  /* SCU_GPIO_FAST | FUNCTION4 */
+  LPC_GPIO->CLR[6] = (1 << 29);  /* RXHP low = 100 Hz HPF */
+  LPC_GPIO->DIR[6] |= (1 << 29);  /* Output */
+  /* PD_16 = GPIO6[30] MAX5864 chip select */
+  LPC_SCU->SFSPD[16] = 0xF4;  /* SCU_GPIO_FAST | FUNCTION4 */
+  LPC_GPIO->SET[6] |= (1 << 30);  /* CS high (inactive) */
+  LPC_GPIO->DIR[6] |= (1 << 30);  /* Output */
+
+  /* Configure Port E pins for MAX2831 control (use SFSPE registers) */
+  /* PE_1 = GPIO7[1] MAX2831 ENABLE */
+  LPC_SCU->SFSPE[1] = 0xF4;  /* SCU_GPIO_FAST | FUNCTION4 */
+  LPC_GPIO->CLR[7] = (1 << 1);  /* Start disabled */
+  LPC_GPIO->DIR[7] |= (1 << 1);  /* Output */
+  /* PE_2 = GPIO7[2] MAX2831 RXTX mode select */
+  LPC_SCU->SFSPE[2] = 0xF4;  /* SCU_GPIO_FAST | FUNCTION4 */
+  LPC_GPIO->CLR[7] = (1 << 2);  /* Start in shutdown mode */
+  LPC_GPIO->DIR[7] |= (1 << 2);  /* Output */
+
   // Trigger FPGA bitstream loading via fpga bridge
   // Attempt to load the FPGA bitstream
   // This function returns LD_SUCCESS (0) if the FPGA confirms the bitstream
