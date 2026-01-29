@@ -341,23 +341,12 @@ const PALConfig pal_default_config = {
     {  4,  9, scu_config_normal_drive_t { .mode=4, .epd=0, .epun=0, .ehs=0, .ezi=0, .zif=0 } }, /* SGPIO14/BANK2F3M4: CPLD.81/CPLD_P81 */
     {  4, 10, scu_config_normal_drive_t { .mode=4, .epd=0, .epun=0, .ehs=0, .ezi=0, .zif=0 } }, /* SGPIO15/BANK2F3M6: CPLD.78/CPLD_P78 */
 
-#ifdef PRALINE
-    /* HackRF Pro: FPGA Control Pins (Reusing CPLD JTAG pins) */
-    /* P6_1: FPGA_CRESET (GPIO3[0]) - Set as GPIO (Mode 0), Output */
-    {  6,  1, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=0, .ehs=0, .ezi=0, .zif=0 } },
-    /* P6_2: FPGA_SPI_CS (GPIO3[1]) - Set as GPIO (Mode 0), Output */
-    {  6,  2, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=0, .ehs=0, .ezi=0, .zif=0 } },
-    /* P6_5: FPGA_CDONE (GPIO3[4]) - Set as GPIO (Mode 0), Input */
-    {  6,  5, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=1, .ehs=0, .ezi=1, .zif=1 } },
-    /* P9_5: Unused or Debug? Keep as-is or set to GPIO if needed */
-    {  9,  5, scu_config_normal_drive_t { .mode=4, .epd=0, .epun=0, .ehs=0, .ezi=1, .zif=0 } },
-#else
-    /* HackRF: CPLD */
-    {  6,  1, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=1, .ehs=0, .ezi=0, .zif=0 } }, /* CPLD_TCK: CPLD.TCK(I), PortaPack CPLD.TCK(I) */
-    {  6,  2, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=1, .ehs=0, .ezi=1, .zif=0 } }, /* CPLD_TDI: CPLD.TDI(I), PortaPack I2S0_RX_SDA(O), PortaPack CPLD.TDI(I) */
-    {  6,  5, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=1, .ehs=0, .ezi=0, .zif=0 } }, /* CPLD_TMS: CPLD.TMS(I) */
-    {  9,  5, scu_config_normal_drive_t { .mode=4, .epd=0, .epun=0, .ehs=0, .ezi=1, .zif=0 } }, /* CPLD_TDO: CPLD.TDO(O) */
-#endif
+    /* PortaPack CPLD JTAG pins - same for all builds including PRALINE
+     * (PRALINE FPGA uses P5_1/P5_2/P4_10, not these pins) */
+    {  6,  1, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=1, .ehs=0, .ezi=0, .zif=0 } }, /* CPLD_TCK: PortaPack CPLD.TCK(I) */
+    {  6,  2, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=1, .ehs=0, .ezi=1, .zif=0 } }, /* CPLD_TDI: PortaPack CPLD.TDI(I), I2S0_RX_SDA(O) */
+    {  6,  5, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=1, .ehs=0, .ezi=0, .zif=0 } }, /* CPLD_TMS: HackRF CPLD.TMS(I) */
+    {  9,  5, scu_config_normal_drive_t { .mode=4, .epd=0, .epun=0, .ehs=0, .ezi=1, .zif=0 } }, /* CPLD_TDO: HackRF CPLD.TDO(O) */
 
     /* PortaPack CPLD */
     {  1,  5, scu_config_normal_drive_t { .mode=0, .epd=0, .epun=0, .ehs=0, .ezi=1, .zif=0 } }, /* SD_POW: PortaPack CPLD.TDO(O) */
