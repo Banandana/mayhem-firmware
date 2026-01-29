@@ -938,6 +938,9 @@ extern "C" void boardInit(void) {
    * PRALINE uses different pins than HackRF One for SGPIO4/8/9/10.
    * SCU_GPIO_FAST = 0xF0 (EPUN + EHS + EZI + ZIF)
    */
+  /* CRITICAL: Disable HackRF One SGPIO8 pin (P9_6) - PRALINE uses P8_0 instead */
+  LPC_SCU->SFSP[9][6] = 0x00;  /* P9_6 = GPIO mode 0, disable SGPIO function */
+
   /* SGPIO4 = P9_4 function 6 (HOST_DATA4) */
   LPC_SCU->SFSP[9][4] = 0xF6;  /* SCU_GPIO_FAST | func 6 */
   /* SGPIO8 = P8_0 function 4 (SGPIO_CLK - clock from FPGA) */
@@ -949,9 +952,18 @@ extern "C" void boardInit(void) {
   /* SGPIO11 = P1_17 function 6 (HOST_DIRECTION - output to FPGA, tells FPGA TX vs RX) */
   LPC_SCU->SFSP[1][17] = 0xF6;  /* SCU_GPIO_FAST | func 6 */
 
+  /* SGPIO data pins (SGPIO0-7) - all 8 bits required for sample data */
+  LPC_SCU->SFSP[0][0] = 0xF3;   /* SGPIO0: P0_0 function 3, HOST_DATA0 */
+  LPC_SCU->SFSP[0][1] = 0xF3;   /* SGPIO1: P0_1 function 3, HOST_DATA1 */
+  LPC_SCU->SFSP[1][15] = 0xF2;  /* SGPIO2: P1_15 function 2, HOST_DATA2 */
+  LPC_SCU->SFSP[1][16] = 0xF2;  /* SGPIO3: P1_16 function 2, HOST_DATA3 */
+  /* SGPIO4 already configured above at line 942 */
+  LPC_SCU->SFSP[6][6] = 0xF2;   /* SGPIO5: P6_6 function 2, HOST_DATA5 */
+  LPC_SCU->SFSP[2][2] = 0xF0;   /* SGPIO6: P2_2 function 0, HOST_DATA6 */
+  LPC_SCU->SFSP[1][0] = 0xF6;   /* SGPIO7: P1_0 function 6, HOST_DATA7 */
+
   /* NOTE: P9_5 is RFFC5072 mixer clock (SCU_MIXER_SCLK), NOT SGPIO!
-   * P1_15 is SGPIO2/HOST_DATA2, already configured in pins_setup.
-   * Do NOT override these pins here. */
+   * Do NOT override P9_5 here. */
 
   // Trigger FPGA bitstream loading via fpga bridge
   // Attempt to load the FPGA bitstream

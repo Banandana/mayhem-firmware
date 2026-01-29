@@ -110,6 +110,7 @@ volatile uint32_t buffer_handled = 0;
 static void transfer_complete() {
     const auto next_lli_index = gpdma_channel_sgpio.next_lli() - &lli_loop[0];
     buffer_transfered++;
+    shared_memory.m4_dma_xfr_count++;  // Phase 0 instrumentation
     thread_wait.wake_from_interrupt(next_lli_index);
 }
 
@@ -161,6 +162,7 @@ void disable() {
 }
 
 baseband::buffer_t wait_for_buffer() {
+    shared_memory.m4_dma_wait_count++;  // Phase 0 instrumentation
     const auto next_index = thread_wait.sleep();
     buffer_handled++;
 

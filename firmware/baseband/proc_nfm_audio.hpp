@@ -41,6 +41,8 @@
 
 class NarrowbandFMAudio : public BasebandProcessor {
    public:
+    NarrowbandFMAudio();  // Phase 2: Explicit constructor for manual thread start
+
     void execute(const buffer_c8_t& buffer) override;
     void on_message(const Message* const message) override;
 
@@ -97,8 +99,9 @@ class NarrowbandFMAudio : public BasebandProcessor {
     CodedSquelchMessage ctcss_message{0};
 
     /* NB: Threads should be the last members in the class definition. */
-    BasebandThread baseband_thread{baseband_fs, this, baseband::Direction::Receive};
-    RSSIThread rssi_thread{};
+    BasebandThread baseband_thread{baseband_fs, this, baseband::Direction::Receive,
+                                    /*auto_start*/ false};  // Phase 2: Manual start
+    RSSIThread rssi_thread{/*auto_start*/ false};          // Phase 2: Manual start
 
     void pitch_rssi_config(const PitchRSSIConfigureMessage& message);
     void configure(const NBFMConfigureMessage& message);

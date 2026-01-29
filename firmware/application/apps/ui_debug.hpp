@@ -438,6 +438,107 @@ class RadioDiagnosticsView : public View {
         "Done"};
 };
 
+
+/* BasebandStatusView ***************************************************/
+
+class BasebandStatusView : public View {
+   public:
+    BasebandStatusView(NavigationView& nav);
+
+    void focus() override;
+    std::string title() const override { return "Baseband Status"; };
+
+   private:
+    NavigationView& nav_;
+
+    void update();
+
+    Text text_title{{0, 0, 240, 16}, "=== Baseband Counters ==="};
+
+    Text text_lbl_marker{{0, 20, 140, 16}, "Streaming Marker:"};
+    Text text_marker{{144, 20, 96, 16}, "---"};
+
+    Text text_lbl_loops{{0, 36, 140, 16}, "Baseband Loops:"};
+    Text text_loops{{144, 36, 96, 16}, "---"};
+
+    Text text_lbl_wait{{0, 52, 140, 16}, "DMA Wait Count:"};
+    Text text_wait{{144, 52, 96, 16}, "---"};
+
+    Text text_lbl_xfr{{0, 68, 140, 16}, "DMA Xfr Count:"};
+    Text text_xfr{{144, 68, 96, 16}, "---"};
+
+    Text text_lbl_missed{{0, 84, 140, 16}, "Buffer Missed:"};
+    Text text_missed{{144, 84, 96, 16}, "---"};
+
+    Text text_status_line1{{0, 110, 240, 16}, ""};
+    Text text_status_line2{{0, 126, 240, 16}, ""};
+    Text text_status_line3{{0, 142, 240, 16}, ""};
+
+    Button button_refresh{
+        {8, 280, 72, 24},
+        "Refresh"};
+
+    Button button_done{
+        {168, 280, 64, 24},
+        "Done"};
+
+    MessageHandlerRegistration message_handler_frame_sync{
+        Message::ID::DisplayFrameSync,
+        [this](const Message* const) { this->update(); }};
+};
+
+/* SGPIOLiveMonitorView ***************************************************/
+
+class SGPIOLiveMonitorView : public View {
+   public:
+    SGPIOLiveMonitorView(NavigationView& nav);
+
+    void focus() override;
+    std::string title() const override { return "SGPIO Live"; };
+
+   private:
+    NavigationView& nav_;
+
+    void update();
+
+    Text text_title{{0, 0, 240, 16}, "=== SGPIO Registers ==="};
+
+    Text text_lbl_ctrl{{0, 20, 140, 16}, "CTRL_ENABLE:"};
+    Text text_ctrl{{144, 20, 96, 16}, "---"};
+
+    Text text_lbl_in{{0, 36, 140, 16}, "GPIO_INREG:"};
+    Text text_in{{144, 36, 96, 16}, "---"};
+
+    Text text_lbl_ss{{0, 52, 140, 16}, "REG_SS[0]:"};
+    Text text_ss{{144, 52, 96, 16}, "---"};
+
+    Text text_lbl_status{{0, 68, 140, 16}, "STATUS_1:"};
+    Text text_status{{144, 68, 96, 16}, "---"};
+
+    Text text_lbl_out{{0, 84, 140, 16}, "GPIO_OUTREG:"};
+    Text text_out{{144, 84, 96, 16}, "---"};
+
+    Text text_lbl_oen{{0, 100, 140, 16}, "GPIO_OENREG:"};
+    Text text_oen{{144, 100, 96, 16}, "---"};
+
+    Text text_diag_line1{{0, 126, 240, 16}, ""};
+    Text text_diag_line2{{0, 142, 240, 16}, ""};
+    Text text_diag_line3{{0, 158, 240, 16}, ""};
+    Text text_diag_line4{{0, 174, 240, 16}, ""};
+
+    Button button_refresh{
+        {8, 280, 72, 24},
+        "Refresh"};
+
+    Button button_done{
+        {168, 280, 64, 24},
+        "Done"};
+
+    MessageHandlerRegistration message_handler_frame_sync{
+        Message::ID::DisplayFrameSync,
+        [this](const Message* const) { this->update(); }};
+};
+
 /* Radio RX Step-by-Step Test View
  * Tests radio hardware directly without M0 baseband involvement.
  * Logs each step to help isolate where the signal chain breaks.
@@ -461,6 +562,8 @@ class RadioRxTestView : public View {
     void run_freq_test();
     void run_sgpio_test();
     void run_full_test();
+    void run_step_test();
+    bool check_gpio_changing();
 
     Labels labels{
         {{0, 0}, "=== Radio RX Test ===", Theme::getInstance()->fg_yellow->foreground}};
@@ -485,13 +588,50 @@ class RadioRxTestView : public View {
         "SGPIO"};
 
     Button button_full{
-        {0, 252, 112, 24},
-        "Full Test"};
+        {0, 252, 56, 24},
+        "Full"};
+
+    Button button_step{
+        {60, 252, 56, 24},
+        "Step"};
 
     Button button_done{
         {120, 252, 112, 24},
         "Done"};
 };
+
+/* SGPIO8 Clock Detector View
+ * Samples SGPIO8 pin to verify external clock is present.
+ * Shows toggle count and estimated frequency.
+ */
+class SGPIO8ClockDetectorView : public View {
+   public:
+    SGPIO8ClockDetectorView(NavigationView& nav);
+    void focus() override;
+    std::string title() const override { return "SGPIO8 Clock"; };
+
+   private:
+    NavigationView& nav_;
+
+    Text text_title{{8, 16, 224, 16}, "SGPIO8 Clock Detector"};
+    Text text_lbl_samples{{8, 48, 160, 16}, "Samples (1000):"};
+    Text text_samples{{8, 64, 224, 16}, "                    "};
+    Text text_lbl_toggles{{8, 96, 160, 16}, "Toggle count:"};
+    Text text_toggles{{8, 112, 224, 16}, "                    "};
+    Text text_lbl_freq{{8, 144, 160, 16}, "Est. frequency:"};
+    Text text_freq{{8, 160, 224, 16}, "                    "};
+    Text text_status{{8, 192, 224, 32}, "                              "};
+
+    Button button_sample{{8, 252, 96, 24}, "Sample"};
+    Button button_done{{128, 252, 96, 24}, "Done"};
+
+    void sample_sgpio8();
+};
+
+/* Slice Status View
+ * Shows SGPIO slice status: which slices are enabled vs active,
+ * counter values, and data capture status.
+ */
 
 class DebugPeripheralsMenuView : public BtnGridView {
    public:

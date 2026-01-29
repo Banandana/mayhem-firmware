@@ -25,6 +25,7 @@
 #include "debug.hpp"
 
 #include "ch.h"
+#include "hal.h"
 
 #include "radio.hpp"
 #include "string_format.hpp"
@@ -498,6 +499,212 @@ void RadioDiagnosticsView::update_status() {
     }
 }
 
+/* BasebandStatusView ******************************************************/
+
+BasebandStatusView::BasebandStatusView(NavigationView& nav)
+    : nav_(nav) {
+    add_children({
+        &text_title,
+        &text_lbl_marker, &text_marker,
+        &text_lbl_loops, &text_loops,
+        &text_lbl_wait, &text_wait,
+        &text_lbl_xfr, &text_xfr,
+        &text_lbl_missed, &text_missed,
+        &text_status_line1,
+        &text_status_line2,
+        &text_status_line3,
+        &button_refresh,
+        &button_done,
+    });
+
+    // Set title color
+    text_title.set_style(Theme::getInstance()->fg_yellow);
+
+    button_refresh.on_select = [this](Button&) {
+        update();
+    };
+
+    button_done.on_select = [&nav](Button&) {
+        nav.pop();
+    };
+
+    // Initial update
+    update();
+}
+
+void BasebandStatusView::focus() {
+    button_refresh.focus();
+}
+
+void BasebandStatusView::update() {
+    // Read counters from shared memory
+    uint8_t marker = shared_memory.m4_streaming_marker;
+    uint32_t loops = shared_memory.m4_baseband_loops;
+    uint32_t wait = shared_memory.m4_dma_wait_count;
+    uint32_t xfr = shared_memory.m4_dma_xfr_count;
+    uint16_t missed = shared_memory.m4_buffer_missed;
+
+    // Display counter values
+    text_marker.set(to_string_hex(marker, 2));
+    text_marker.set_style((marker == 0xAA) ? Theme::getInstance()->fg_green : Theme::getInstance()->fg_red);
+
+    text_loops.set(to_string_dec_uint(loops));
+    text_wait.set(to_string_dec_uint(wait));
+    text_xfr.set(to_string_dec_uint(xfr));
+    text_missed.set(to_string_dec_uint(missed));
+
+    // Status interpretation
+    if (marker == 0x00) {
+        text_status_line1.set("Thread NOT started!");
+        text_status_line2.set("M4 baseband crash.");
+        text_status_line3.set("Check thread race condition.");
+        text_status_line1.set_style(Theme::getInstance()->fg_red);
+        text_status_line2.set_style(Theme::getInstance()->fg_red);
+        text_status_line3.set_style(Theme::getInstance()->fg_red);
+    } else if (marker == 0xAA && loops == 0) {
+        text_status_line1.set("Thread started but");
+        text_status_line2.set("not looping yet.");
+        text_status_line3.set("Wait a moment...");
+        text_status_line1.set_style(Theme::getInstance()->fg_orange);
+        text_status_line2.set_style(Theme::getInstance()->fg_orange);
+        text_status_line3.set_style(Theme::getInstance()->fg_orange);
+    } else if (marker == 0xAA && xfr == 0) {
+        text_status_line1.set("Thread looping " + to_string_dec_uint(loops) + "x");
+        text_status_line2.set("But DMA NOT firing!");
+        text_status_line3.set("Check SGPIO14 enable.");
+        text_status_line1.set_style(Theme::getInstance()->fg_orange);
+        text_status_line2.set_style(Theme::getInstance()->fg_orange);
+        text_status_line3.set_style(Theme::getInstance()->fg_orange);
+    } else if (xfr > 0) {
+        text_status_line1.set("DMA WORKING!");
+        text_status_line2.set("Xfr: " + to_string_dec_uint(xfr));
+        text_status_line3.set("Data flowing to baseband.");
+        text_status_line1.set_style(Theme::getInstance()->fg_green);
+        text_status_line2.set_style(Theme::getInstance()->fg_green);
+        text_status_line3.set_style(Theme::getInstance()->fg_green);
+    }
+}
+
+/* SGPIOLiveMonitorView ****************************************************/
+
+SGPIOLiveMonitorView::SGPIOLiveMonitorView(NavigationView& nav)
+    : nav_(nav) {
+    add_children({
+        &text_title,
+        &text_lbl_ctrl, &text_ctrl,
+        &text_lbl_in, &text_in,
+        &text_lbl_ss, &text_ss,
+        &text_lbl_status, &text_status,
+        &text_lbl_out, &text_out,
+        &text_lbl_oen, &text_oen,
+        &text_diag_line1,
+        &text_diag_line2,
+        &text_diag_line3,
+        &text_diag_line4,
+        &button_refresh,
+        &button_done,
+    });
+
+    // Set title color
+    text_title.set_style(Theme::getInstance()->fg_yellow);
+
+    button_refresh.on_select = [this](Button&) {
+        update();
+    };
+
+    button_done.on_select = [&nav](Button&) {
+        nav.pop();
+    };
+
+    // Initial update
+    update();
+}
+
+void SGPIOLiveMonitorView::focus() {
+    button_refresh.focus();
+}
+
+void SGPIOLiveMonitorView::update() {
+    // Read SGPIO registers via radio debug namespace
+    uint32_t ctrl = radio::debug::sgpio::register_read(0);      // CTRL_ENABLE
+    uint32_t in_reg = radio::debug::sgpio::register_read(1);    // GPIO_INREG
+    uint32_t status = radio::debug::sgpio::register_read(4);    // STATUS_1
+
+    // Read registers directly from LPC_SGPIO peripheral
+    uint32_t reg_ss = LPC_SGPIO->REG_SS[0];
+    uint32_t out_reg = LPC_SGPIO->GPIO_OUTREG;
+    uint32_t oen_reg = LPC_SGPIO->GPIO_OENREG;
+
+    // Display register values
+    text_ctrl.set(to_string_hex(ctrl, 4));
+    text_in.set(to_string_hex(in_reg, 8));
+    text_ss.set(to_string_hex(reg_ss, 8));
+    text_status.set(to_string_hex(status, 4));
+    text_out.set(to_string_hex(out_reg, 4));
+    text_oen.set(to_string_hex(oen_reg, 4));
+
+    // Diagnostics based on register values
+    bool gpio_changing = (in_reg & 0xFF) != 0;  // Check data pins
+    bool regss_active = (reg_ss != 0);
+    bool disable_high = (out_reg & (1U << 10)) != 0;  // Bit 10 = DISABLE signal
+    bool sgpio8_high = (in_reg & (1U << 8)) != 0;     // Bit 8 = SGPIO8 clock
+    bool sgpio8_output = (oen_reg & (1U << 8)) != 0;  // Bit 8 = SGPIO8 direction (should be INPUT=0)
+    
+    // Line 1: SGPIO8 direction check (CRITICAL - must be INPUT)
+    if (sgpio8_output) {
+        text_diag_line1.set("SGPIO8 OUTPUT! (bus conflict)");
+        text_diag_line1.set_style(Theme::getInstance()->fg_red);
+    } else if (disable_high) {
+        text_diag_line1.set("DISABLE=HIGH! FPGA stopped!");
+        text_diag_line1.set_style(Theme::getInstance()->fg_red);
+    } else {
+        text_diag_line1.set("SGPIO8=IN, DISABLE=LOW");
+        text_diag_line1.set_style(Theme::getInstance()->fg_green);
+    }
+
+    // Line 2: Clock signal status
+    if (sgpio8_high && !disable_high) {
+        text_diag_line2.set("SGPIO8=HIGH (clock stuck?)");
+        text_diag_line2.set_style(Theme::getInstance()->fg_orange);
+    } else if (!sgpio8_high && !disable_high) {
+        text_diag_line2.set("SGPIO8=LOW (check toggling)");
+        text_diag_line2.set_style(Theme::getInstance()->fg_orange);
+    } else {
+        text_diag_line2.set("Clock N/A (FPGA disabled)");
+        text_diag_line2.set_style(Theme::getInstance()->fg_medium);
+    }
+
+    // Line 3: REG_SS[0] capture status
+    if (!regss_active && !disable_high) {
+        text_diag_line3.set("REG_SS[0]=0 (NOT CAPTURING!)");
+        text_diag_line3.set_style(Theme::getInstance()->fg_red);
+    } else if (regss_active) {
+        text_diag_line3.set("REG_SS[0] has data");
+        text_diag_line3.set_style(Theme::getInstance()->fg_green);
+    } else {
+        text_diag_line3.set("Capture N/A (FPGA disabled)");
+        text_diag_line3.set_style(Theme::getInstance()->fg_medium);
+    }
+
+    // Line 4: Root cause summary
+    if (sgpio8_output) {
+        text_diag_line4.set("FIX: Set SGPIO8 to INPUT!");
+        text_diag_line4.set_style(Theme::getInstance()->fg_red);
+    } else if (disable_high) {
+        text_diag_line4.set("FIX: Clear DISABLE bit!");
+        text_diag_line4.set_style(Theme::getInstance()->fg_red);
+    } else if (!sgpio8_high || gpio_changing) {
+        text_diag_line4.set("Clock issue - check FPGA");
+        text_diag_line4.set_style(Theme::getInstance()->fg_orange);
+    } else if (!regss_active) {
+        text_diag_line4.set("Slice config issue");
+        text_diag_line4.set_style(Theme::getInstance()->fg_orange);
+    } else {
+        text_diag_line4.set("SGPIO OK, check DMA config");
+        text_diag_line4.set_style(Theme::getInstance()->fg_green);
+    }
+}
+
 /* RadioRxTestView ********************************************************/
 
 RadioRxTestView::RadioRxTestView(NavigationView& nav)
@@ -510,6 +717,7 @@ RadioRxTestView::RadioRxTestView(NavigationView& nav)
         &button_freq,
         &button_sgpio,
         &button_full,
+        &button_step,
         &button_done,
     });
 
@@ -531,6 +739,10 @@ RadioRxTestView::RadioRxTestView(NavigationView& nav)
 
     button_full.on_select = [this](Button&) {
         run_full_test();
+    };
+
+    button_step.on_select = [this](Button&) {
+        run_step_test();
     };
 
     button_done.on_select = [&nav](Button&) {
@@ -639,12 +851,20 @@ void RadioRxTestView::run_freq_test() {
 
 void RadioRxTestView::run_sgpio_test() {
     console.clear(true);
-    log("=== SGPIO TEST ===");
+    log("=== SGPIO TEST (FIXED) ===");
 
-    // Configure SGPIO outputs and enable streaming
-    // CRITICAL: Must set GPIO_OENREG to make SGPIO10/11 outputs!
+    // CRITICAL FIX: Set DISABLE=HIGH first (reference HackRF pattern)
     LPC_SGPIO->GPIO_OENREG = (1U << 10) | (1U << 11);  // SGPIO10,11 outputs
-    LPC_SGPIO->GPIO_OUTREG = 0;  // HOST_DISABLE=0 (enable), HOST_DIRECTION=0 (RX)
+    LPC_SGPIO->GPIO_OUTREG = (1U << 10);  // DISABLE=HIGH during config
+    log("Set DISABLE=HIGH");
+
+    // Small delay for signals to settle
+    for (volatile int i = 0; i < 10000; i++) {}
+
+    // NOW enable streaming (DISABLE=LOW)
+    LPC_SGPIO->GPIO_OUTREG = 0;  // DISABLE=LOW, DIRECTION=LOW (RX)
+    log("Set DISABLE=LOW (streaming)");
+    for (volatile int i = 0; i < 10000; i++) {}
 
     // Read raw GPIO_INREG multiple times
     uint32_t g[4];
@@ -697,14 +917,19 @@ void RadioRxTestView::run_full_test() {
     bool freq_ok = radio::set_tuning_frequency(wifi_freq);
     log(freq_ok ? "  Freq OK" : "  Freq FAIL");
 
-    // Step 5: Configure SGPIO outputs and enable streaming
-    log("[5/6] Enable streaming...");
-    // CRITICAL: Must configure GPIO_OENREG to make SGPIO10/11 outputs!
-    // Without this, writing to GPIO_OUTREG has no effect on pins.
-    // For RX: SGPIO10 (HOST_DISABLE) and SGPIO11 (HOST_DIRECTION) = outputs
-    //         SGPIO0-7 (HOST_DATA) = inputs (receive from FPGA)
+    // Step 5: Configure SGPIO outputs with correct DISABLE sequence
+    log("[5/6] Configure SGPIO...");
+    // CRITICAL FIX: Set DISABLE=HIGH first
     LPC_SGPIO->GPIO_OENREG = (1U << 10) | (1U << 11);  // SGPIO10,11 as outputs
-    LPC_SGPIO->GPIO_OUTREG = 0;  // HOST_DISABLE=0, HOST_DIRECTION=0 (RX)
+    LPC_SGPIO->GPIO_OUTREG = (1U << 10);  // DISABLE=HIGH during config
+    log("  DISABLE=HIGH");
+
+    // Delay for settle
+    for (volatile int i = 0; i < 10000; i++) {}
+
+    // NOW enable streaming (DISABLE=LOW)
+    LPC_SGPIO->GPIO_OUTREG = 0;  // DISABLE=LOW, DIRECTION=LOW (RX)
+    log("  DISABLE=LOW (streaming)");
 
     // Step 6: Check raw GPIO pins
     log("[6/6] Check GPIO pins...");
@@ -749,6 +974,290 @@ void RadioRxTestView::run_full_test() {
     }
 
     log_registers("[Final]");
+}
+
+bool RadioRxTestView::check_gpio_changing() {
+    uint32_t g[4];
+    for (int i = 0; i < 4; i++) {
+        g[i] = LPC_SGPIO->GPIO_INREG;
+        for (volatile int j = 0; j < 10000; j++) {}
+    }
+    return (g[0] != g[1]) || (g[1] != g[2]) || (g[2] != g[3]);
+}
+
+void RadioRxTestView::run_step_test() {
+    console.clear(true);
+    log("=== STEP TEST (FIXED) ===");
+    log("Correct DISABLE sequence");
+
+    // Ensure radio is initialized
+    if (!radio_initialized_) {
+        log("Init radio...");
+        radio::init();
+        radio_initialized_ = true;
+        radio::set_baseband_rate(8000000);
+        radio::set_direction(rf::Direction::Receive);
+        radio::set_tuning_frequency(2437000000);
+    }
+
+    // Step 0: Baseline with DISABLE=HIGH first
+    log("[0] Baseline (DISABLE=HIGH)");
+    LPC_SGPIO->CTRL_ENABLE = 0;  // Disable all slices
+    LPC_SGPIO->GPIO_OENREG = 0x0C00;  // Bits 10, 11 outputs
+    LPC_SGPIO->GPIO_OUTREG = (1U << 10);  // DISABLE=HIGH first!
+    for (volatile int i = 0; i < 100000; i++) {}
+
+    // Now enable streaming to check baseline
+    LPC_SGPIO->GPIO_OUTREG = 0x0000;  // DISABLE=LOW
+    for (volatile int i = 0; i < 100000; i++) {}
+    bool step0 = check_gpio_changing();
+    log(step0 ? "  PASS: Data changing" : "  FAIL: Data static");
+    if (!step0) { log("ABORT: Baseline broken"); return; }
+
+    // NOW disable streaming for configuration
+    log("[Config] Set DISABLE=HIGH");
+    LPC_SGPIO->GPIO_OUTREG = (1U << 10);  // DISABLE=HIGH
+    for (volatile int i = 0; i < 100000; i++) {}
+
+    // Step 1: OUT_MUX_CFG data pins - test individually
+    log("[1] OUT_MUX_CFG[0-7] data");
+    uint32_t data_out_mux = (9U << 0) | (0U << 4);  // DOUT_DOUTM8A, GPIO_OE
+
+    for (size_t i = 0; i < 8; i++) {
+        uint32_t before = LPC_SGPIO->GPIO_INREG;
+        LPC_SGPIO->OUT_MUX_CFG[i] = data_out_mux;
+        for (volatile int j = 0; j < 50000; j++) {}
+        uint32_t after = LPC_SGPIO->GPIO_INREG;
+        bool ok = check_gpio_changing();
+
+        log("  [" + to_string_dec_uint(i) + "] " +
+            to_string_hex(before & 0xFF, 2) + "->" +
+            to_string_hex(after & 0xFF, 2) +
+            (ok ? " OK" : " FAIL"));
+
+        if (!ok) {
+            log("CULPRIT: OUT_MUX_CFG[" + to_string_dec_uint(i) + "]");
+            return;
+        }
+    }
+    log("  All data pins PASS");
+
+    // Step 2: OUT_MUX_CFG control pins - SKIP PIN 10 (HOST_DISABLE)
+    log("[2] OUT_MUX_CFG ctrl pins");
+    log("  (skipping pin 10 - breaks)");
+
+    struct { int pin; uint32_t val; } ctrl_pins[] = {
+        {8, (0U << 0) | (0U << 4)},
+        {9, (0U << 0) | (0U << 4)},
+        // {10, (4U << 0) | (0U << 4)},  // SKIP - causes failure
+        {11, (4U << 0) | (0U << 4)},
+        {14, (0U << 0) | (0U << 4)}
+    };
+
+    for (auto& p : ctrl_pins) {
+        uint32_t before = LPC_SGPIO->GPIO_INREG;
+        LPC_SGPIO->OUT_MUX_CFG[p.pin] = p.val;
+        for (volatile int i = 0; i < 50000; i++) {}
+        uint32_t after = LPC_SGPIO->GPIO_INREG;
+        bool ok = check_gpio_changing();
+
+        log("  [" + to_string_dec_uint(p.pin) + "] " +
+            to_string_hex(before & 0xFF, 2) + "->" +
+            to_string_hex(after & 0xFF, 2) +
+            (ok ? " OK" : " FAIL"));
+
+        if (!ok) {
+            log("CULPRIT: OUT_MUX_CFG[" + to_string_dec_uint(p.pin) + "]");
+            return;
+        }
+    }
+    log("  All ctrl pins PASS");
+
+    // Step 3: Set GPIO_OENREG for RX
+    log("[3] GPIO_OENREG full RX");
+    LPC_SGPIO->GPIO_OENREG = 0x0C00;  // Keep same as baseline
+    for (volatile int i = 0; i < 100000; i++) {}
+    bool step3 = check_gpio_changing();
+    log(step3 ? "  PASS" : "  FAIL: Data stopped!");
+    if (!step3) { log("CULPRIT: GPIO_OENREG"); return; }
+
+    // Step 3.5: Configure slice D as clock source (CRITICAL!)
+    log("[3.5] Slice D clock source");
+    const uint32_t slice_d = 3;
+    // SGPIO_MUX_CFG: External clock from SGPIO8, qualifier from SGPIO9
+    LPC_SGPIO->SGPIO_MUX_CFG[slice_d] = (1U << 0) | (0U << 1) | (0U << 3) | (3U << 5) | (1U << 7) | (0U << 9) | (0U << 11) | (0U << 12);
+    // SLICE_MUX_CFG: 1 bit per clock, CLKGEN_MODE=1 (external clock!) <- FIX
+    LPC_SGPIO->SLICE_MUX_CFG[slice_d] = (0U << 0) | (0U << 1) | (0U << 2) | (0U << 3) | (1U << 4) | (0U << 6) | (0U << 8);
+    LPC_SGPIO->PRESET[slice_d] = 0;
+    LPC_SGPIO->COUNT[slice_d] = 0;
+    LPC_SGPIO->POS[slice_d] = (0x1F << 0) | (0x1F << 8);
+    LPC_SGPIO->REG[slice_d] = 0x11111111;
+    LPC_SGPIO->REG_SS[slice_d] = 0x11111111;
+    // Enable slice D counter
+    LPC_SGPIO->CTRL_ENABLE = (1U << slice_d);
+    for (volatile int i = 0; i < 100000; i++) {}
+    bool step3_5 = check_gpio_changing();
+    log(step3_5 ? "  PASS" : "  FAIL: Data stopped!");
+    if (!step3_5) { log("CULPRIT: Slice D config"); return; }
+
+    // Step 4: SGPIO_MUX_CFG slice A
+    log("[4] SGPIO_MUX_CFG[A]");
+    LPC_SGPIO->SGPIO_MUX_CFG[0] = (1U << 0) | (0U << 1) | (3U << 3) | (3U << 5) | (1U << 7) | (0U << 9) | (0U << 11) | (0U << 12);  // Clock from slice D (bit3-4=3), external pin SGPIO8, qualifier SGPIO9
+    for (volatile int i = 0; i < 100000; i++) {}
+    bool step4 = check_gpio_changing();
+    log(step4 ? "  PASS" : "  FAIL: Data stopped!");
+    if (!step4) { log("CULPRIT: SGPIO_MUX_CFG[A]"); return; }
+
+    // Step 5: SLICE_MUX_CFG slice A
+    log("[5] SLICE_MUX_CFG[A]");
+    LPC_SGPIO->SLICE_MUX_CFG[0] = (0U << 0) | (0U << 1) | (1U << 2) | (0U << 3) | (1U << 4) | (3U << 6) | (0U << 8);  // CLKGEN_MODE=1 (external clock!), PARALLEL_MODE 1 byte
+    for (volatile int i = 0; i < 100000; i++) {}
+    bool step5 = check_gpio_changing();
+    log(step5 ? "  PASS" : "  FAIL: Data stopped!");
+    if (!step5) { log("CULPRIT: SLICE_MUX_CFG[A]"); return; }
+
+    // Step 6: Slice A registers
+    log("[6] Slice A registers");
+    LPC_SGPIO->PRESET[0] = 0;
+    LPC_SGPIO->COUNT[0] = 0;
+    LPC_SGPIO->POS[0] = (0x1F << 0) | (0x1F << 8);  // pos, pos_reset
+    LPC_SGPIO->REG[0] = 0;
+    LPC_SGPIO->REG_SS[0] = 0;
+    for (volatile int i = 0; i < 100000; i++) {}
+    bool step6 = check_gpio_changing();
+    log(step6 ? "  PASS" : "  FAIL: Data stopped!");
+    if (!step6) { log("CULPRIT: Slice A registers"); return; }
+
+    // Step 7: Enable slice A counter (keep slice D enabled) - still with DISABLE=HIGH
+    log("[7] Enable slices D+A");
+    LPC_SGPIO->CTRL_ENABLE = (1U << 3) | (1U << 0);  // Slice D + Slice A
+    for (volatile int i = 0; i < 100000; i++) {}
+
+    // Check STATUS_1 BEFORE enabling streaming
+    uint32_t status_pre = LPC_SGPIO->STATUS_1;
+    log("  STATUS_1 (pre): " + to_string_hex(status_pre, 4));
+
+    // Step 8: Enable streaming (DISABLE=LOW) - THIS IS THE CRITICAL TEST
+    log("[8] Enable streaming (DISABLE=LOW)");
+    LPC_SGPIO->GPIO_OUTREG = 0;  // DISABLE=LOW
+    for (volatile int i = 0; i < 100000; i++) {}
+
+    // Check if slices become active
+    uint32_t status_post = LPC_SGPIO->STATUS_1;
+    uint32_t regss = LPC_SGPIO->REG_SS[0];
+    uint32_t count_a = LPC_SGPIO->COUNT[0];
+
+    log("  STATUS_1 (post): " + to_string_hex(status_post, 4));
+    log("  REG_SS[0]: " + to_string_hex(regss, 8));
+    log("  COUNT[0]: " + to_string_hex(count_a, 8));
+
+    bool step8 = check_gpio_changing();
+    log(step8 ? "  GPIO still changing" : "  GPIO stopped!");
+
+    if ((status_post & 1) && regss != 0) {
+        log("=== SUCCESS! Slice A capturing! ===");
+    } else if (status_post & 1) {
+        log("=== PARTIAL: Slice A active but REG_SS=0 ===");
+    } else {
+        log("=== FAIL: Slice A not active ===");
+        log("Expected: STATUS_1 bit 0 = 1");
+        log("Actual: STATUS_1 bit 0 = " + to_string_dec_uint(status_post & 1));
+    }
+}
+
+/* SGPIO8ClockDetectorView ***********************************************/
+
+SGPIO8ClockDetectorView::SGPIO8ClockDetectorView(NavigationView& nav)
+    : nav_(nav) {
+    add_children({
+        &text_title,
+        &text_lbl_samples,
+        &text_samples,
+        &text_lbl_toggles,
+        &text_toggles,
+        &text_lbl_freq,
+        &text_freq,
+        &text_status,
+        &button_sample,
+        &button_done,
+    });
+
+    text_title.set_style(Theme::getInstance()->fg_yellow);
+
+    button_sample.on_select = [this](Button&) {
+        sample_sgpio8();
+    };
+
+    button_done.on_select = [&nav](Button&) {
+        nav.pop();
+    };
+
+    // Auto-sample on load
+    sample_sgpio8();
+}
+
+void SGPIO8ClockDetectorView::focus() {
+    button_sample.focus();
+}
+
+void SGPIO8ClockDetectorView::sample_sgpio8() {
+    // Sample SGPIO8 (bit 8 of GPIO_INREG) 1000 times
+    const int num_samples = 1000;
+    uint8_t samples[num_samples];
+
+    for (int i = 0; i < num_samples; i++) {
+        uint32_t inreg = LPC_SGPIO->GPIO_INREG;
+        samples[i] = (inreg >> 8) & 1;  // Extract SGPIO8 bit
+        // Small delay between samples
+        for (volatile int j = 0; j < 100; j++) {}
+    }
+
+    // Count toggles (transitions 0→1 or 1→0)
+    int toggles = 0;
+    for (int i = 1; i < num_samples; i++) {
+        if (samples[i] != samples[i-1]) {
+            toggles++;
+        }
+    }
+
+    // Display first 20 samples
+    std::string sample_str;
+    for (int i = 0; i < 20 && i < num_samples; i++) {
+        sample_str += (samples[i] ? "1" : "0");
+    }
+    text_samples.set(sample_str);
+
+    // Display toggle count
+    text_toggles.set(to_string_dec_uint(toggles) + " / " +
+                     to_string_dec_uint(num_samples - 1));
+
+    // Estimate frequency (very rough)
+    // Assume ~200 cycles per sample (100 cycle delay + overhead)
+    // At 204 MHz CPU: 200 cycles = ~1 us per sample
+    // 1000 samples = ~1 ms
+    // toggles / 2 = full clock cycles
+    // freq ≈ (toggles / 2) / 1ms = (toggles / 2) kHz
+    int freq_khz = toggles / 2;
+    text_freq.set(to_string_dec_uint(freq_khz) + " kHz (approx)");
+
+    // Status interpretation
+    if (toggles > 900) {
+        text_status.set("CLOCK PRESENT - Fast toggle");
+        text_status.set_style(Theme::getInstance()->fg_green);
+    } else if (toggles > 100) {
+        text_status.set("CLOCK PRESENT - Slow toggle");
+        text_status.set_style(Theme::getInstance()->fg_green);
+    } else if (toggles > 10) {
+        text_status.set("PARTIAL - Some toggles");
+        text_status.set_style(Theme::getInstance()->fg_orange);
+    } else if (toggles == 0) {
+        text_status.set("NO CLOCK - Stuck at " +
+                       std::string(samples[0] ? "HIGH" : "LOW"));
+        text_status.set_style(Theme::getInstance()->fg_red);
+    } else {
+        text_status.set("QUESTIONABLE - Few toggles");
+        text_status.set_style(Theme::getInstance()->fg_orange);
+    }
 }
 
 /* DebugPeripheralsMenuView **********************************************/
@@ -811,6 +1320,9 @@ void DebugMenuView::on_populate() {
     }
     add_items({
         {"Radio Diag", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<RadioDiagnosticsView>(); }},
+        {"Baseband Status", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<BasebandStatusView>(); }},
+        {"SGPIO Live", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<SGPIOLiveMonitorView>(); }},
+        {"SGPIO8 Clock", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<SGPIO8ClockDetectorView>(); }},
         {"RX Test", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<RadioRxTestView>(); }},
         {"Buttons Test", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_controls, [this]() { nav_.push<DebugControlsView>(); }},
         {"M0 Stack Dump", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_memory, [this]() { stack_dump(); }},
