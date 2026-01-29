@@ -26,6 +26,9 @@
 #include "rffc507x.hpp"
 #include "max2837.hpp"
 #include "max2839.hpp"
+#ifdef PRALINE
+#include "max2831.hpp"
+#endif
 #include "max5864.hpp"
 #include "baseband_cpld.hpp"
 
@@ -56,6 +59,18 @@ static constexpr uint32_t ssp_scr(
     return static_cast<uint8_t>(pclk_f / cpsr / spi_f - 1);
 }
 
+#ifdef PRALINE
+/* MAX2831 uses 9-bit SPI transfers */
+static constexpr SPIConfig ssp_config_max283x = {
+    .end_cb = NULL,
+    .ssport = gpio_max283x_select.port(),
+    .sspad = gpio_max283x_select.pad(),
+    .cr0 =
+        CR0_CLOCKRATE(ssp_scr(ssp1_pclk_f, ssp1_cpsr, max283x_spi_f) + 3) | CR0_FRFSPI | CR0_DSS9BIT,
+    .cpsr = ssp1_cpsr,
+};
+#else
+/* MAX2837/MAX2839 use 16-bit SPI transfers */
 static constexpr SPIConfig ssp_config_max283x = {
     .end_cb = NULL,
     .ssport = gpio_max283x_select.port(),
@@ -64,6 +79,7 @@ static constexpr SPIConfig ssp_config_max283x = {
         CR0_CLOCKRATE(ssp_scr(ssp1_pclk_f, ssp1_cpsr, max283x_spi_f) + 3) | CR0_FRFSPI | CR0_DSS16BIT,
     .cpsr = ssp1_cpsr,
 };
+#endif
 
 static constexpr SPIConfig ssp_config_max5864 = {
     .end_cb = NULL,
@@ -89,6 +105,9 @@ rffc507x::RFFC507x first_if;
 max283x::MAX283x* second_if;
 max2837::MAX2837 second_if_max2837{ssp1_target_max283x};
 max2839::MAX2839 second_if_max2839{ssp1_target_max283x};
+#ifdef PRALINE
+max2831::MAX2831 second_if_max2831{ssp1_target_max283x};
+#endif
 static max5864::MAX5864 baseband_codec{ssp1_target_max5864};
 static baseband::CPLD baseband_cpld;
 
@@ -98,15 +117,20 @@ static bool baseband_invert = false;
 static bool mixer_invert = false;
 
 void init() {
+#ifdef PRALINE
+    /* PRALINE uses MAX2831 transceiver */
+    second_if = (max283x::MAX283x*)&second_if_max2831;
+#else
     if (hackrf_r9) {
         gpio_r9_not_ant_pwr.write(1);
         gpio_r9_not_ant_pwr.output();
     }
-    rf_path.init();
-    first_if.init();
     second_if = hackrf_r9
                     ? (max283x::MAX283x*)&second_if_max2839
                     : (max283x::MAX283x*)&second_if_max2837;
+#endif
+    rf_path.init();
+    first_if.init();
     second_if->init();
     baseband_codec.init();
     baseband_cpld.init();
