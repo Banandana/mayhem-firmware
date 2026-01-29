@@ -52,7 +52,13 @@ if(FLASH_MB_SIZE LESS FLASH_MB_LIMIT_SIZE)
 endif()
 
 math(EXPR FLASH_BYTES_SIZE "${FLASH_MB_SIZE} * 1024 * 1024")
-math(EXPR FLASH_BYTES_LIMIT_SIZE "${FLASH_MB_LIMIT_SIZE} * 1024 * 1024")
+
+# PRALINE: Base firmware can be 1.5MB (FPGA at 0x180000)
+if(BOARD STREQUAL "PRALINE")
+    math(EXPR FLASH_BYTES_LIMIT_SIZE "1536 * 1024")  # 1.5MB = 1572864 bytes
+else()
+    math(EXPR FLASH_BYTES_LIMIT_SIZE "${FLASH_MB_LIMIT_SIZE} * 1024 * 1024")
+endif()
 #generate h files
 configure_file(flashsize.h.in ${CMAKE_CURRENT_SOURCE_DIR}/firmware/flashsize.h)
 
