@@ -56,6 +56,11 @@ constexpr si5351::PLL si5351_pll_xtal_25m{
 };
 constexpr auto si5351_pll_a_xtal_reg = si5351_pll_xtal_25m.reg(0);
 
+static_assert(si5351_pll_xtal_25m.f_vco() == si5351_vco_f, "PLL XTAL frequency wrong");
+static_assert(si5351_pll_xtal_25m.p1() == 3584, "PLL XTAL P1 wrong");
+static_assert(si5351_pll_xtal_25m.p2() == 0, "PLL XTAL P2 wrong");
+static_assert(si5351_pll_xtal_25m.p3() == 1, "PLL XTAL P3 wrong");
+
 constexpr si5351::PLL si5351_pll_clkin_10m{
     .f_in = si5351_inputs.f_clkin_out(),
     .a = 80,
@@ -64,11 +69,6 @@ constexpr si5351::PLL si5351_pll_clkin_10m{
 };
 constexpr auto si5351c_pll_b_clkin_reg = si5351_pll_clkin_10m.reg(1);
 constexpr auto si5351a_pll_a_clkin_reg = si5351_pll_clkin_10m.reg(0);
-
-static_assert(si5351_pll_xtal_25m.f_vco() == si5351_vco_f, "PLL XTAL frequency wrong");
-static_assert(si5351_pll_xtal_25m.p1() == 3584, "PLL XTAL P1 wrong");
-static_assert(si5351_pll_xtal_25m.p2() == 0, "PLL XTAL P2 wrong");
-static_assert(si5351_pll_xtal_25m.p3() == 1, "PLL XTAL P3 wrong");
 
 static_assert(si5351_pll_clkin_10m.f_vco() == si5351_vco_f, "PLL CLKIN frequency wrong");
 static_assert(si5351_pll_clkin_10m.p1() == 9728, "PLL CLKIN P1 wrong");

@@ -438,6 +438,61 @@ class RadioDiagnosticsView : public View {
         "Done"};
 };
 
+/* Radio RX Step-by-Step Test View
+ * Tests radio hardware directly without M0 baseband involvement.
+ * Logs each step to help isolate where the signal chain breaks.
+ */
+class RadioRxTestView : public View {
+   public:
+    RadioRxTestView(NavigationView& nav);
+
+    void focus() override;
+    std::string title() const override { return "RX Test"; };
+
+   private:
+    NavigationView& nav_;
+    bool radio_initialized_{false};
+    uint32_t test_frequency_{433000000};  // 433 MHz default
+
+    void log(const std::string& msg);
+    void log_registers(const std::string& label);
+    void run_init_test();
+    void run_rx_mode_test();
+    void run_freq_test();
+    void run_sgpio_test();
+    void run_full_test();
+
+    Labels labels{
+        {{0, 0}, "=== Radio RX Test ===", Theme::getInstance()->fg_yellow->foreground}};
+
+    Console console{
+        {0, 20, 240, 200}};
+
+    Button button_init{
+        {0, 224, 56, 24},
+        "Init"};
+
+    Button button_rx{
+        {60, 224, 56, 24},
+        "RX"};
+
+    Button button_freq{
+        {120, 224, 56, 24},
+        "Freq"};
+
+    Button button_sgpio{
+        {180, 224, 56, 24},
+        "SGPIO"};
+
+    Button button_full{
+        {0, 252, 112, 24},
+        "Full Test"};
+
+    Button button_done{
+        {120, 252, 112, 24},
+        "Done"};
+};
+
 class DebugPeripheralsMenuView : public BtnGridView {
    public:
     DebugPeripheralsMenuView(NavigationView& nav);

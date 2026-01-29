@@ -28,6 +28,9 @@
 #include "max2839.hpp"
 #ifdef PRALINE
 #include "max2831.hpp"
+extern "C" {
+#include "fpga_bridge.h"
+}
 #endif
 #include "max5864.hpp"
 #include "baseband_cpld.hpp"
@@ -94,18 +97,6 @@ static constexpr SPIConfig ssp_config_max5864 = {
     .cpsr = ssp1_cpsr,
 };
 
-#ifdef PRALINE
-/* FPGA (iCE40) uses 8-bit SPI Mode 3 (CPOL=1, CPHA=1) */
-static constexpr SPIConfig ssp_config_fpga = {
-    .end_cb = NULL,
-    .ssport = gpio_fpga_select.port(),
-    .sspad = gpio_fpga_select.pad(),
-    .cr0 =
-        CR0_CLOCKRATE(ssp_scr(ssp1_pclk_f, ssp1_cpsr, max5864_spi_f)) | CR0_FRFSPI | CR0_DSS8BIT | CR0_CPOL | CR0_CPHA,
-    .cpsr = ssp1_cpsr,
-};
-#endif
-
 static spi::arbiter::Arbiter ssp1_arbiter(portapack::ssp1);
 
 static spi::arbiter::Target ssp1_target_max283x{
@@ -115,12 +106,6 @@ static spi::arbiter::Target ssp1_target_max283x{
 static spi::arbiter::Target ssp1_target_max5864{
     ssp1_arbiter,
     ssp_config_max5864};
-
-#ifdef PRALINE
-static spi::arbiter::Target ssp1_target_fpga{
-    ssp1_arbiter,
-    ssp_config_fpga};
-#endif
 
 static rf::path::Path rf_path;
 rffc507x::RFFC507x first_if;
@@ -365,50 +350,32 @@ int8_t temp_sense() {
 #ifdef PRALINE
 namespace fpga {
 
-/* Use SPI arbiter for FPGA access to keep SPI state consistent.
- * Direct SSP1 manipulation corrupts the arbiter's cached config,
- * which then causes MAX5864 SPI transfers to fail. */
+/* Use fpga_bridge.c functions for FPGA register access.
+ * These properly switch SPI mode between iCE40 (Mode 3, 8-bit)
+ * and MAX2831 (Mode 0, 9-bit). After each access, we must
+ * invalidate the SPI arbiter's cached config since fpga_bridge.c
+ * modifies SSP1 registers directly. */
 
 uint32_t register_read(const size_t register_number) {
-    if (register_number == 0 || register_number > 5) return 0xFF;
-
-    // SPI protocol for iCE40 read: [reg & 0x7F, 0x00, 0x00] -> value in byte 3
-    std::array<uint8_t, 3> cmd = {
-        static_cast<uint8_t>(register_number & 0x7F),
-        0x00,
-        0x00
-    };
-    ssp1_target_fpga.transfer(cmd.data(), cmd.size());
-
-    return cmd[2];  // Value is in the third byte
+    uint32_t result = fpga_debug_register_read(static_cast<uint8_t>(register_number));
+    ssp1_arbiter.invalidate();  // Force arbiter to reconfigure on next transfer
+    return result;
 }
 
 void register_write(const size_t register_number, uint32_t value) {
-    if (register_number == 0 || register_number > 5) return;
-
-    // SPI protocol for iCE40 write: [(reg | 0x80), value, 0x00]
-    std::array<uint8_t, 3> cmd = {
-        static_cast<uint8_t>((register_number & 0x7F) | 0x80),
-        static_cast<uint8_t>(value),
-        0x00
-    };
-    ssp1_target_fpga.transfer(cmd.data(), cmd.size());
+    fpga_debug_register_write(static_cast<uint8_t>(register_number), static_cast<uint8_t>(value));
+    ssp1_arbiter.invalidate();  // Force arbiter to reconfigure on next transfer
 }
 
 void init() {
-    /* Configure FPGA CS GPIO as output via the GPIO interface.
-     * The SPI arbiter handles CS automatically during transfers,
-     * but we ensure the pin is properly configured. */
-    gpio_fpga_select.output();
-    gpio_fpga_select.set();  // CS high (deselected)
-
     // Initialize FPGA registers after bitstream load
     // DC_BLOCK (bit 0) must be enabled for RX to work
-    register_write(1, 0x01);  // CTRL: DC_BLOCK=1
-    register_write(2, 0x01);  // RX_DECIM: decimation by 2 (n=1)
-    register_write(3, 0x00);  // TX_CTRL: NCO disabled
-    register_write(4, 0x00);  // TX_INTRP: no interpolation
-    register_write(5, 0x00);  // TX_PSTEP: zero phase step
+    fpga_debug_register_write(1, 0x01);  // CTRL: DC_BLOCK=1
+    fpga_debug_register_write(2, 0x00);  // RX_DECIM: no decimation
+    fpga_debug_register_write(3, 0x00);  // TX_CTRL: NCO disabled
+    fpga_debug_register_write(4, 0x00);  // TX_INTRP: no interpolation
+    fpga_debug_register_write(5, 0x00);  // TX_PSTEP: zero phase step
+    ssp1_arbiter.invalidate();  // Force arbiter to reconfigure on next transfer
 }
 
 } /* namespace fpga */

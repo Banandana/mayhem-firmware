@@ -19,6 +19,11 @@
  * Boston, MA 02110-1301, USA.
  */
 
+/*
+ * MAX2831 driver ported from GSG HackRF reference implementation (max2831.c).
+ * Adapted to work with Mayhem's MAX283x abstraction layer.
+ */
+
 #include "max2831.hpp"
 
 #include "hackrf_hal.hpp"
@@ -29,6 +34,7 @@ using namespace hackrf::one;
 #include "hal.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace max2831 {
 
@@ -40,6 +46,8 @@ using namespace max283x;
  *   Word format: [VALUE:14][REG:4]
  *   First transfer: bits 17:9 (high 9 bits)
  *   Second transfer: bits 8:0 (low 9 bits)
+ *
+ * This matches the GSG reference implementation exactly.
  */
 void MAX2831::write_reg(const uint8_t reg, const uint16_t value) {
     uint32_t word = (((uint32_t)value & 0x3fff) << 4) | (reg & 0xf);
@@ -50,13 +58,33 @@ void MAX2831::write_reg(const uint8_t reg, const uint16_t value) {
     _target.transfer(values, 2);
 }
 
-void MAX2831::flush_reg(const uint8_t reg) {
-    write_reg(reg, _regs[reg]);
+void MAX2831::set_reg_field(const uint8_t reg, const uint16_t mask, const uint16_t value) {
+    _regs[reg] = (_regs[reg] & ~mask) | (value & mask);
+    mark_dirty(reg);
 }
 
-void MAX2831::flush_all() {
+uint16_t MAX2831::get_reg_field(const uint8_t reg, const uint16_t mask, const uint8_t shift) {
+    return (_regs[reg] & mask) >> shift;
+}
+
+void MAX2831::mark_dirty(const uint8_t reg) {
+    _regs_dirty |= (1 << reg);
+}
+
+void MAX2831::mark_clean(const uint8_t reg) {
+    _regs_dirty &= ~(1 << reg);
+}
+
+void MAX2831::flush_reg(const uint8_t reg) {
+    write_reg(reg, _regs[reg]);
+    mark_clean(reg);
+}
+
+void MAX2831::flush_dirty() {
     for (size_t r = 0; r < reg_count; r++) {
-        flush_reg(r);
+        if ((_regs_dirty >> r) & 0x1) {
+            flush_reg(r);
+        }
     }
 }
 
@@ -70,28 +98,33 @@ void MAX2831::init() {
     gpio_max2831_rxhp.write(0);  /* RXHP low = 100 Hz HPF (default) */
 
     /* Reset to default register values */
-    _regs = default_regs;
+    std::memcpy(_regs.data(), default_regs.data(), sizeof(_regs));
+    _regs_dirty = 0xFFFF;
 
-    /* Enable SPI control of gain settings */
-    _regs[8] |= REG8_RXVGA_GAIN_SPI_EN;  /* RX VGA gain via SPI */
-    _regs[9] |= REG9_TXVGA_GAIN_SPI_EN;  /* TX VGA gain via SPI */
+    /* Write default register values to chip */
+    flush_dirty();
 
-    /* Set initial gains */
-    _regs[11] = (_regs[11] & ~REG11_LNA_GAIN_MASK) | REG11_LNA_GAIN_MAX;
-    _regs[11] = (_regs[11] & ~REG11_RXVGA_GAIN_MASK) | 0x18;  /* Moderate RX VGA gain */
-    _regs[12] = (_regs[12] & ~REG12_TXVGA_GAIN_MASK) | 0x00;  /* Minimum TX gain */
+    /* Use SPI control instead of B1-B7 pins for gain settings.
+     * This matches the GSG reference: max2831_setup() */
+    set_reg_field(8, REG8_RXVGA_GAIN_SPI_EN, REG8_RXVGA_GAIN_SPI_EN);
+    set_reg_field(9, REG9_TXVGA_GAIN_SPI_EN, REG9_TXVGA_GAIN_SPI_EN);
 
-    /* Configure LPF for reasonable bandwidth */
-    _regs[8] = (_regs[8] & ~REG8_RX_LPF_COARSE_MASK) | REG8_RX_LPF_7_5M;
-    _regs[8] = (_regs[8] & ~REG8_RX_LPF_FINE_MASK) | REG8_RX_LPF_FINE_100;
-    _regs[7] = (_regs[7] & ~REG7_TX_LPF_COARSE_MASK) | REG7_TX_LPF_8M;
-    _regs[7] = (_regs[7] & ~REG7_TX_LPF_FINE_MASK) | REG7_TX_LPF_FINE_100;
+    /* Set initial gains - matches GSG reference */
+    set_reg_field(12, REG12_TXVGA_GAIN_MASK, 0x00);  /* Minimum TX gain */
+    set_reg_field(7, REG7_RX_HPF_SEL_MASK, REG7_RX_HPF_30KHZ);
+    set_reg_field(11, REG11_LNA_GAIN_MASK, REG11_LNA_GAIN_MAX);
+    set_reg_field(11, REG11_RXVGA_GAIN_MASK, 0x18);  /* Moderate RX VGA gain */
+
+    /* Configure baseband filter for 8 MHz TX - matches GSG reference */
+    set_reg_field(8, REG8_LPF_COARSE_MASK, REG8_RX_LPF_7_5M);
+    set_reg_field(7, REG7_RX_LPF_FINE_MASK, REG7_RX_LPF_FINE_100);
+    set_reg_field(7, REG7_TX_LPF_FINE_MASK, REG7_TX_LPF_FINE_100);
 
     /* Disable clock output */
-    _regs[14] &= ~REG14_CLKOUT_EN;
+    set_reg_field(14, REG14_CLKOUT_PIN_EN, 0);
 
-    /* Write all registers */
-    flush_all();
+    /* Write all modified registers */
+    flush_dirty();
 
     set_mode(Mode::Standby);
 }
@@ -101,16 +134,33 @@ void MAX2831::set_mode(const Mode mode) {
 
     /*
      * MAX2831 mode control via ENABLE and RXTX pins.
-     * From hackrf max2831_target.c:
+     * From GSG hackrf max2831_target.c:
      *
      *   Shutdown: ENABLE=0, RXTX=0
      *   Standby:  ENABLE=0, RXTX=1  (PLL/VCO/LO on, ready for quick TX/RX)
      *   RX:       ENABLE=1, RXTX=0
      *   TX:       ENABLE=1, RXTX=1
      *
-     * Note: gpio_max2831_rx_enable is actually the RXTX mode select pin.
+     * Note: gpio_max2831_rx_enable is the RXTX mode select pin.
      * RXTX=0 selects RX, RXTX=1 selects TX.
      */
+
+    /* Handle calibration mode bits if needed */
+    bool tx_cal = (mode == Mode::Tx_Calibration);
+    bool rx_cal = (mode == Mode::Rx_Calibration);
+
+    uint16_t current_tx_cal = get_reg_field(6, REG6_TX_CAL_MODE_EN, REG6_TX_CAL_MODE_EN_SHIFT);
+    uint16_t current_rx_cal = get_reg_field(6, REG6_RX_CAL_MODE_EN, REG6_RX_CAL_MODE_EN_SHIFT);
+
+    if (current_tx_cal != (tx_cal ? 1 : 0)) {
+        set_reg_field(6, REG6_TX_CAL_MODE_EN, tx_cal ? REG6_TX_CAL_MODE_EN : 0);
+        flush_dirty();
+    }
+    if (current_rx_cal != (rx_cal ? 1 : 0)) {
+        set_reg_field(6, REG6_RX_CAL_MODE_EN, rx_cal ? REG6_RX_CAL_MODE_EN : 0);
+        flush_dirty();
+    }
+
     switch (mode) {
         default:
         case Mode::Shutdown:
@@ -132,20 +182,26 @@ void MAX2831::set_mode(const Mode mode) {
             gpio_max283x_enable.write(1);     /* ENABLE=1 */
             break;
     }
+
+    /* Update LPF bandwidth for current mode */
+    if (_desired_lpf_bw > 0) {
+        set_lpf_bandwidth_internal(_desired_lpf_bw);
+    }
 }
 
 void MAX2831::set_tx_vga_gain(const int_fast8_t db) {
-    /* TX VGA gain: 0-31 dB in ~1 dB steps */
+    /* TX VGA gain: 0-31 dB in ~1 dB steps
+     * Register value: gain * 2 | 1, max 0x3F
+     * This matches GSG reference: max2831_set_txvga_gain() */
     int_fast8_t db_clipped = std::max(0, std::min(31, (int)db));
-    /* Register value: gain * 2 | 1, max 0x3F */
     uint16_t value = std::min((db_clipped << 1) | 1, 0x3f);
-    _regs[12] = (_regs[12] & ~REG12_TXVGA_GAIN_MASK) | value;
+    set_reg_field(12, REG12_TXVGA_GAIN_MASK, value);
     flush_reg(12);
 }
 
 void MAX2831::set_lna_gain(const int_fast8_t db) {
     /*
-     * LNA gain has 3 settings:
+     * LNA gain has 3 settings (from GSG reference):
      *   MAX (33 dB), -16 dB from max (17 dB), -33 dB from max (0 dB)
      * Map from MAX2837 8 dB steps for compatibility
      */
@@ -157,67 +213,137 @@ void MAX2831::set_lna_gain(const int_fast8_t db) {
     } else {
         gain_val = REG11_LNA_GAIN_M33;
     }
-    _regs[11] = (_regs[11] & ~REG11_LNA_GAIN_MASK) | gain_val;
+    set_reg_field(11, REG11_LNA_GAIN_MASK, gain_val);
     flush_reg(11);
 }
 
 void MAX2831::set_vga_gain(const int_fast8_t db) {
-    /* VGA gain: 0-62 dB in 2 dB steps */
+    /* VGA gain: 0-62 dB in 2 dB steps
+     * This matches GSG reference: max2831_set_vga_gain() */
+    if ((db & 0x1) || db > 62) {
+        return;  /* Invalid: must be even and <= 62 */
+    }
     int_fast8_t db_clipped = std::max(0, std::min(62, (int)db));
     uint16_t value = (db_clipped >> 1) & 0x1f;
-    _regs[11] = (_regs[11] & ~REG11_RXVGA_GAIN_MASK) | value;
+    set_reg_field(11, REG11_RXVGA_GAIN_MASK, value);
     flush_reg(11);
 }
 
-void MAX2831::set_lpf_rf_bandwidth_rx(const uint32_t bandwidth_minimum) {
-    /* RX LPF bandwidths (approximate -0.5 dB points):
-     *   7.5 MHz, 8.5 MHz, 15 MHz, 18 MHz
-     * With fine adjustment: 90%, 95%, 100%, 105%, 110%
-     */
-    uint16_t coarse;
-    if (bandwidth_minimum <= 11600000) {
-        coarse = REG8_RX_LPF_7_5M;
-    } else if (bandwidth_minimum <= 15100000) {
-        coarse = REG8_RX_LPF_8_5M;
-    } else if (bandwidth_minimum <= 22600000) {
-        coarse = REG8_RX_LPF_15M;
+/*
+ * LPF bandwidth tables from GSG reference max2831.c
+ */
+struct lpf_ft_t {
+    uint32_t bandwidth_hz;
+    uint8_t ft;
+};
+
+struct lpf_ft_fine_t {
+    uint8_t percent;
+    uint8_t ft_fine;
+};
+
+/* Measured -0.5 dB complex baseband bandwidth for each register setting */
+static constexpr lpf_ft_t rx_lpf_ft[] = {
+    { 11600000, REG8_RX_LPF_7_5M },
+    { 15100000, REG8_RX_LPF_8_5M },
+    { 22600000, REG8_RX_LPF_15M },
+    { 28300000, REG8_RX_LPF_18M },
+    { 0, 0 },
+};
+
+static constexpr lpf_ft_fine_t rx_lpf_ft_fine[] = {
+    {  90, REG7_RX_LPF_FINE_90 },
+    {  95, REG7_RX_LPF_FINE_95 },
+    { 100, REG7_RX_LPF_FINE_100 },
+    { 105, REG7_RX_LPF_FINE_105 },
+    { 110, REG7_RX_LPF_FINE_110 },
+    {   0, 0 },
+};
+
+static constexpr lpf_ft_t tx_lpf_ft[] = {
+    { 11900000, REG8_TX_LPF_8M },
+    { 15800000, REG8_TX_LPF_11M },
+    { 23600000, REG8_TX_LPF_16_5M },
+    { 31300000, REG8_TX_LPF_22_5M },
+    { 0, 0 },
+};
+
+static constexpr lpf_ft_fine_t tx_lpf_ft_fine[] = {
+    {  90, REG7_TX_LPF_FINE_90 },
+    {  95, REG7_TX_LPF_FINE_95 },
+    { 100, REG7_TX_LPF_FINE_100 },
+    { 105, REG7_TX_LPF_FINE_105 },
+    { 110, REG7_TX_LPF_FINE_110 },
+    { 115, REG7_TX_LPF_FINE_115 },
+    {   0, 0 },
+};
+
+uint32_t MAX2831::set_lpf_bandwidth_internal(const uint32_t bandwidth_hz) {
+    const lpf_ft_t* coarse;
+    const lpf_ft_fine_t* fine;
+
+    if (_mode == Mode::Receive || _mode == Mode::Rx_Calibration) {
+        coarse = rx_lpf_ft;
+        fine = rx_lpf_ft_fine;
     } else {
-        coarse = REG8_RX_LPF_18M;
+        coarse = tx_lpf_ft;
+        fine = tx_lpf_ft_fine;
     }
 
-    _regs[8] = (_regs[8] & ~REG8_RX_LPF_COARSE_MASK) | coarse;
-    _regs[8] = (_regs[8] & ~REG8_RX_LPF_FINE_MASK) | REG8_RX_LPF_FINE_100;
-    flush_reg(8);
+    /* Find coarse and fine settings for LPF - matches GSG reference */
+    bool found = false;
+    const lpf_ft_fine_t* f = fine;
+    for (; coarse->bandwidth_hz != 0; coarse++) {
+        uint32_t coarse_aux = coarse->bandwidth_hz / 100;
+        for (f = fine; f->percent != 0; f++) {
+            if ((coarse_aux * f->percent) >= bandwidth_hz) {
+                found = true;
+                break;
+            }
+        }
+        if (found) break;
+    }
+
+    /* Use the widest setting if a wider bandwidth than our maximum is requested */
+    if (!found) {
+        coarse--;
+        f--;
+    }
+
+    /* Program found settings */
+    set_reg_field(8, REG8_LPF_COARSE_MASK, coarse->ft);
+    if (_mode == Mode::Receive || _mode == Mode::Rx_Calibration) {
+        set_reg_field(7, REG7_RX_LPF_FINE_MASK, f->ft_fine);
+    } else {
+        /* TX fine values are already shifted in the constants (REG7_TX_LPF_FINE_*) */
+        set_reg_field(7, REG7_TX_LPF_FINE_MASK, f->ft_fine);
+    }
+    flush_dirty();
+
+    return coarse->bandwidth_hz * f->percent / 100;
+}
+
+void MAX2831::set_lpf_rf_bandwidth_rx(const uint32_t bandwidth_minimum) {
+    _desired_lpf_bw = bandwidth_minimum;
+    if (_mode == Mode::Receive || _mode == Mode::Rx_Calibration) {
+        set_lpf_bandwidth_internal(bandwidth_minimum);
+    }
 }
 
 void MAX2831::set_lpf_rf_bandwidth_tx(const uint32_t bandwidth_minimum) {
-    /* TX LPF bandwidths (approximate -0.5 dB points):
-     *   8 MHz, 11 MHz, 16.5 MHz, 22.5 MHz
-     * With fine adjustment: 90%, 95%, 100%, 105%, 110%, 115%
-     */
-    uint16_t coarse;
-    if (bandwidth_minimum <= 11900000) {
-        coarse = REG7_TX_LPF_8M;
-    } else if (bandwidth_minimum <= 15800000) {
-        coarse = REG7_TX_LPF_11M;
-    } else if (bandwidth_minimum <= 23600000) {
-        coarse = REG7_TX_LPF_16_5M;
-    } else {
-        coarse = REG7_TX_LPF_22_5M;
+    _desired_lpf_bw = bandwidth_minimum;
+    if (_mode == Mode::Transmit || _mode == Mode::Tx_Calibration) {
+        set_lpf_bandwidth_internal(bandwidth_minimum);
     }
-
-    _regs[7] = (_regs[7] & ~REG7_TX_LPF_COARSE_MASK) | coarse;
-    _regs[7] = (_regs[7] & ~REG7_TX_LPF_FINE_MASK) | REG7_TX_LPF_FINE_100;
-    flush_reg(7);
 }
 
 bool MAX2831::set_frequency(const rf::Frequency lo_frequency) {
     /*
-     * MAX2831 frequency synthesis:
+     * MAX2831 frequency synthesis from GSG reference max2831_set_frequency():
      *   F_LO = F_REF * (N + F/2^20) / R
      * Where:
      *   F_REF = 40 MHz reference
-     *   R = reference divider (1 or 2)
+     *   R = reference divider (1 or 2), we use R=2
      *   N = integer divider (8 bits)
      *   F = fractional divider (20 bits)
      *
@@ -225,29 +351,40 @@ bool MAX2831::set_frequency(const rf::Frequency lo_frequency) {
      */
 
     /* MAX2831 supports 2.3-2.6 GHz */
-    if (lo_frequency < 2300000000 || lo_frequency > 2600000000) {
+    if (lo_frequency < 2300000000ULL || lo_frequency > 2600000000ULL) {
         return false;
     }
 
-    constexpr uint32_t ref_freq = 20000000;  /* 40 MHz / 2 */
+    /* From GSG reference: ASSUME 40MHz PLL. Ratio = F*R/40,000,000.
+     * TODO: fixed to R=2. Check if it's worth exploring R=1. */
+    uint32_t freq = lo_frequency;
+    freq += (20000000 >> 21);  /* Round to nearest frequency */
+    uint32_t div_int = freq / 20000000;
+    uint32_t div_rem = freq % 20000000;
+    uint32_t div_frac = 0;
+    uint32_t div_cmp = 20000000;
 
-    /* Calculate integer and fractional parts */
-    uint64_t ratio_q20 = (static_cast<uint64_t>(lo_frequency) << 20) / ref_freq;
-    uint16_t n = ratio_q20 >> 20;
-    uint32_t f = ratio_q20 & 0xFFFFF;
+    for (int i = 0; i < 20; i++) {
+        div_frac <<= 1;
+        div_rem <<= 1;
+        if (div_rem >= div_cmp) {
+            div_frac |= 0x1;
+            div_rem -= div_cmp;
+        }
+    }
 
-    /* Split fractional into low 6 bits and high 14 bits */
-    uint16_t frac_lo = f & 0x3F;
-    uint16_t frac_hi = (f >> 6) & 0x3FFF;
+    /* Write order matters - matches GSG reference */
+    /* REG 3: SYN_INT (bits 7:0) and SYN_FRAC_LO (bits 13:8) */
+    uint16_t reg3_val = (div_int & 0xFF) | ((div_frac & 0x3F) << 8);
+    _regs[3] = reg3_val;
+    mark_dirty(3);
 
-    /* Update registers */
-    _regs[0] = (_regs[0] & ~REG0_SYN_FRAC_LO_MASK) | frac_lo;
-    _regs[0] = (_regs[0] & ~REG0_SYN_INT_MASK) | ((n << REG0_SYN_INT_SHIFT) & REG0_SYN_INT_MASK);
-    _regs[3] = frac_hi;
+    /* REG 4: SYN_FRAC_HI (bits 13:0) - upper 14 bits of 20-bit fractional */
+    uint16_t reg4_val = (div_frac >> 6) & 0x3FFF;
+    _regs[4] = reg4_val;
+    mark_dirty(4);
 
-    /* Write in correct order */
-    flush_reg(0);
-    flush_reg(3);
+    flush_dirty();
 
     return true;
 }
@@ -263,19 +400,20 @@ void MAX2831::set_tx_LO_iq_phase_calibration(const size_t v) {
 }
 
 void MAX2831::set_rx_buff_vcm(const size_t v) {
-    /* MAX2831 RX IQ common mode voltage is in register 15 */
-    /* Values: 0=0.9V, 1=1.0V, 2=1.1V, 3=1.2V */
-    uint16_t vcm = std::min(v, (size_t)3);
-    _regs[15] = (_regs[15] & ~0x0003) | vcm;
+    /* MAX2831 RX IQ common mode voltage is in register 15
+     * Values: 0=1.1V, 1=1.2V, 2=1.3V, 3=1.45V */
+    uint16_t vcm = std::min(v, (size_t)3) << REG15_RXIQ_VCM_SHIFT;
+    set_reg_field(15, REG15_RXIQ_VCM_MASK, vcm);
     flush_reg(15);
 }
 
 int8_t MAX2831::temp_sense() {
-    /* MAX2831 temperature sensor can be read via RSSI MUX
-     * This is a simplified implementation - returns a fixed value
-     * A full implementation would switch RSSI_MUX to temperature,
-     * read the ADC, then switch back.
-     */
+    /* MAX2831 temperature sensor can be read via RSSI MUX.
+     * This would require:
+     * 1. Switch RSSI_MUX to temperature mode
+     * 2. Read the ADC
+     * 3. Switch back to RSSI mode
+     * For now, return a placeholder value. */
     return 25;  /* Room temperature placeholder */
 }
 
@@ -291,6 +429,7 @@ void MAX2831::write(const address_t reg_num, const reg_t value) {
     if (reg_num < reg_count) {
         _regs[reg_num] = value & 0x3FFF;  /* 14-bit registers */
         write_reg(reg_num, _regs[reg_num]);
+        mark_clean(reg_num);
     }
 }
 

@@ -498,6 +498,259 @@ void RadioDiagnosticsView::update_status() {
     }
 }
 
+/* RadioRxTestView ********************************************************/
+
+RadioRxTestView::RadioRxTestView(NavigationView& nav)
+    : nav_(nav) {
+    add_children({
+        &labels,
+        &console,
+        &button_init,
+        &button_rx,
+        &button_freq,
+        &button_sgpio,
+        &button_full,
+        &button_done,
+    });
+
+    button_init.on_select = [this](Button&) {
+        run_init_test();
+    };
+
+    button_rx.on_select = [this](Button&) {
+        run_rx_mode_test();
+    };
+
+    button_freq.on_select = [this](Button&) {
+        run_freq_test();
+    };
+
+    button_sgpio.on_select = [this](Button&) {
+        run_sgpio_test();
+    };
+
+    button_full.on_select = [this](Button&) {
+        run_full_test();
+    };
+
+    button_done.on_select = [&nav](Button&) {
+        nav.pop();
+    };
+
+    log("Ready. Press buttons to test.");
+    log("Init->RX->Freq->SGPIO");
+}
+
+void RadioRxTestView::focus() {
+    button_full.focus();
+}
+
+void RadioRxTestView::log(const std::string& msg) {
+    console.writeln(msg);
+}
+
+void RadioRxTestView::log_registers(const std::string& label) {
+    // RFFC5072 register 0
+    uint32_t rffc_r0 = radio::debug::first_if::register_read(0);
+
+    // MAX283x registers 0, 3, 4 (key freq regs)
+    uint32_t max_r0 = radio::debug::second_if::register_read(0);
+    uint32_t max_r3 = radio::debug::second_if::register_read(3);
+    uint32_t max_r4 = radio::debug::second_if::register_read(4);
+
+    // SGPIO
+    uint32_t sgpio_en = radio::debug::sgpio::register_read(0);
+    uint32_t sgpio_data = radio::debug::sgpio::register_read(5);
+
+    log(label);
+    log(" RFFC:" + to_string_hex(rffc_r0, 4));
+    log(" MAX r0:" + to_string_hex(max_r0, 4) +
+        " r3:" + to_string_hex(max_r3, 4) +
+        " r4:" + to_string_hex(max_r4, 4));
+    log(" SGPIO en:" + to_string_hex(sgpio_en, 4) +
+        " dat:" + to_string_hex(sgpio_data, 8));
+
+#ifdef PRALINE
+    uint32_t fpga_ctrl = radio::debug::fpga::register_read(1);
+    log(" FPGA ctrl:" + to_string_hex(fpga_ctrl, 2));
+#endif
+}
+
+void RadioRxTestView::run_init_test() {
+    console.clear(true);
+    log("=== INIT TEST ===");
+
+    log("radio::init()...");
+    radio::init();
+    radio_initialized_ = true;
+
+    log("set_baseband_rate(8M)...");
+    radio::set_baseband_rate(8000000);
+
+    log_registers("[After init]");
+    log("Init+clocks done.");
+}
+
+void RadioRxTestView::run_rx_mode_test() {
+    console.clear(true);
+    log("=== RX MODE TEST ===");
+
+    if (!radio_initialized_) {
+        log("ERROR: Run Init first!");
+        return;
+    }
+
+    log_registers("[Before RX mode]");
+
+    log("Calling set_direction(Receive)...");
+    radio::set_direction(rf::Direction::Receive);
+
+    log_registers("[After RX mode]");
+
+    // Check MAX283x mode register
+    uint32_t max_r0 = radio::debug::second_if::register_read(0);
+    log("MAX r0 after RX: " + to_string_hex(max_r0, 4));
+    log("RX mode set.");
+}
+
+void RadioRxTestView::run_freq_test() {
+    console.clear(true);
+    log("=== FREQ TEST ===");
+
+    if (!radio_initialized_) {
+        log("ERROR: Run Init first!");
+        return;
+    }
+
+    log_registers("[Before freq set]");
+
+    log("Setting " + to_string_dec_uint(test_frequency_ / 1000000) + " MHz...");
+    bool result = radio::set_tuning_frequency(test_frequency_);
+
+    log_registers("[After freq set]");
+
+    log(result ? "Freq set OK" : "Freq set FAILED");
+
+    // Show expected vs actual for MAX2831 freq regs
+    // For 433 MHz with MAX2831: F_LO = 40M * (N + F/2^20) / 2
+    // N = 43, F = ~629146 for ~433 MHz
+    log("(Expected: N~43 in r3, F_hi in r4)");
+}
+
+void RadioRxTestView::run_sgpio_test() {
+    console.clear(true);
+    log("=== SGPIO TEST ===");
+
+    // Configure SGPIO outputs and enable streaming
+    // CRITICAL: Must set GPIO_OENREG to make SGPIO10/11 outputs!
+    LPC_SGPIO->GPIO_OENREG = (1U << 10) | (1U << 11);  // SGPIO10,11 outputs
+    LPC_SGPIO->GPIO_OUTREG = 0;  // HOST_DISABLE=0 (enable), HOST_DIRECTION=0 (RX)
+
+    // Read raw GPIO_INREG multiple times
+    uint32_t g[4];
+    for (int i = 0; i < 4; i++) {
+        g[i] = LPC_SGPIO->GPIO_INREG;
+        for (volatile int j = 0; j < 10000; j++) {}
+    }
+
+    log("GPIO_IN:");
+    log(" " + to_string_hex(g[0], 8) + " " + to_string_hex(g[1], 8));
+    log(" " + to_string_hex(g[2], 8) + " " + to_string_hex(g[3], 8));
+
+    bool changing = (g[0] != g[1]) || (g[1] != g[2]) || (g[2] != g[3]);
+
+    if (changing) {
+        log("PASS: Data changing!");
+    } else if (g[0] == 0) {
+        log("FAIL: All zeros");
+    } else if (g[0] == 0x00000FFF) {
+        log("FAIL: 0xFFF = pull-ups");
+        log("FPGA not driving data");
+    } else {
+        log("FAIL: Static " + to_string_hex(g[0], 8));
+    }
+
+    uint32_t out = LPC_SGPIO->GPIO_OUTREG;
+    log("HOST_DIS=" + to_string_dec_uint((out >> 10) & 1));
+}
+
+void RadioRxTestView::run_full_test() {
+    console.clear(true);
+    log("=== FULL RX TEST ===");
+
+    // Step 1: Init
+    log("[1/6] Init radio...");
+    radio::init();
+    radio_initialized_ = true;
+
+    // Step 2: Set sample rate (configures Si5351 clocks!)
+    log("[2/6] Set 8M sample rate...");
+    radio::set_baseband_rate(8000000);
+
+    // Step 3: RX mode
+    log("[3/6] Set RX mode...");
+    radio::set_direction(rf::Direction::Receive);
+
+    // Step 4: Frequency - use 2437 MHz (WiFi ch6) which is in MAX2831 range
+    uint32_t wifi_freq = 2437000000;
+    log("[4/6] Set 2437 MHz (WiFi)...");
+    bool freq_ok = radio::set_tuning_frequency(wifi_freq);
+    log(freq_ok ? "  Freq OK" : "  Freq FAIL");
+
+    // Step 5: Configure SGPIO outputs and enable streaming
+    log("[5/6] Enable streaming...");
+    // CRITICAL: Must configure GPIO_OENREG to make SGPIO10/11 outputs!
+    // Without this, writing to GPIO_OUTREG has no effect on pins.
+    // For RX: SGPIO10 (HOST_DISABLE) and SGPIO11 (HOST_DIRECTION) = outputs
+    //         SGPIO0-7 (HOST_DATA) = inputs (receive from FPGA)
+    LPC_SGPIO->GPIO_OENREG = (1U << 10) | (1U << 11);  // SGPIO10,11 as outputs
+    LPC_SGPIO->GPIO_OUTREG = 0;  // HOST_DISABLE=0, HOST_DIRECTION=0 (RX)
+
+    // Step 6: Check raw GPIO pins
+    log("[6/6] Check GPIO pins...");
+
+    // Delay for stabilization
+    for (volatile int i = 0; i < 200000; i++) {}
+
+    // Read raw GPIO_INREG multiple times
+    uint32_t g1 = LPC_SGPIO->GPIO_INREG;
+    for (volatile int i = 0; i < 10000; i++) {}
+    uint32_t g2 = LPC_SGPIO->GPIO_INREG;
+    for (volatile int i = 0; i < 10000; i++) {}
+    uint32_t g3 = LPC_SGPIO->GPIO_INREG;
+    for (volatile int i = 0; i < 10000; i++) {}
+    uint32_t g4 = LPC_SGPIO->GPIO_INREG;
+
+    log("GPIO_IN readings:");
+    log(" " + to_string_hex(g1, 8) + " " + to_string_hex(g2, 8));
+    log(" " + to_string_hex(g3, 8) + " " + to_string_hex(g4, 8));
+
+    bool gpio_changing = (g1 != g2) || (g2 != g3) || (g3 != g4);
+    bool gpio_not_zero = (g1 != 0);
+    bool gpio_not_fff = (g1 != 0x00000FFF);
+
+    // Check Si5351 output enable register (reg 3)
+    // Bits 0-7: CLK0-7 output enable (0=enabled, 1=disabled)
+    // We want CLK0 and CLK1 enabled (bits 0,1 = 0)
+    log("---");
+
+    if (gpio_changing) {
+        log("=== PASS: Data flowing! ===");
+    } else if (gpio_not_fff && gpio_not_zero) {
+        log("=== PARTIAL: Static data ===");
+        log("FPGA outputs but no clock?");
+    } else if (!gpio_not_zero) {
+        log("=== FAIL: All zeros ===");
+        log("FPGA not driving outputs");
+    } else {
+        log("=== FAIL: All FFF (pull-ups) ===");
+        log("FPGA outputs high-Z");
+        log("Check: Si5351 CLK0/CLK1");
+    }
+
+    log_registers("[Final]");
+}
+
 /* DebugPeripheralsMenuView **********************************************/
 
 DebugPeripheralsMenuView::DebugPeripheralsMenuView(NavigationView& nav)
@@ -558,6 +811,7 @@ void DebugMenuView::on_populate() {
     }
     add_items({
         {"Radio Diag", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<RadioDiagnosticsView>(); }},
+        {"RX Test", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<RadioRxTestView>(); }},
         {"Buttons Test", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_controls, [this]() { nav_.push<DebugControlsView>(); }},
         {"M0 Stack Dump", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_memory, [this]() { stack_dump(); }},
         {"Memory Dump", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_memory, [this]() { nav_.push<DebugMemoryDumpView>(); }},

@@ -46,6 +46,12 @@ class Arbiter {
         _bus.transfer(data, count);
     }
 
+    /* Invalidate cached config - forces reconfiguration on next transfer.
+     * Call this after directly manipulating SSP registers (e.g., FPGA access). */
+    void invalidate() {
+        _config = nullptr;
+    }
+
    private:
     SPI& _bus;
     const SPIConfig* _config;
