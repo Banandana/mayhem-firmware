@@ -91,6 +91,12 @@ void init();
 } /* namespace fpga */
 #endif
 
+namespace sgpio {
+
+uint32_t register_read(const size_t register_number);
+
+} /* namespace sgpio */
+
 } /* namespace debug */
 
 } /* namespace radio */

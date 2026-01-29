@@ -45,6 +45,10 @@ using namespace hackrf::one;
 #include "portapack.hpp"
 #include "portapack_persistent_memory.hpp"
 
+#include "hal.h"  // For LPC_SGPIO
+
+#include <array>
+
 /* Direct access to the radio. Setting values incorrectly can damage
  * the device. Applications should use ReceiverModel or TransmitterModel
  * instead of calling these functions directly. */
@@ -361,131 +365,47 @@ int8_t temp_sense() {
 #ifdef PRALINE
 namespace fpga {
 
-// Direct SSP1 register access - bypassing ChibiOS driver entirely
-// This matches the approach used in fpga_bridge.c during early boot
-
-// SSP1 register addresses
-#define SSP1_BASE       0x400C5000
-#define SSP1_CR0        (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x000))
-#define SSP1_CR1        (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x004))
-#define SSP1_DR         (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x008))
-#define SSP1_SR         (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x00C))
-#define SSP1_CPSR       (*reinterpret_cast<volatile uint32_t*>(SSP1_BASE + 0x010))
-
-// SSP status bits
-#define SSP_SR_TNF      (1 << 1)  // TX FIFO not full
-#define SSP_SR_RNE      (1 << 2)  // RX FIFO not empty
-#define SSP_SR_BSY      (1 << 4)  // Busy
-
-// GPIO direct access for chip select (GPIO2[10])
-#define GPIO_PORT2_SET  (*reinterpret_cast<volatile uint32_t*>(0x400F4000 + 0x2200 + 2*4))
-#define GPIO_PORT2_CLR  (*reinterpret_cast<volatile uint32_t*>(0x400F4000 + 0x2280 + 2*4))
-#define GPIO_PORT2_DIR  (*reinterpret_cast<volatile uint32_t*>(0x400F4000 + 0x2000 + 2*4))
-#define FPGA_CS_BIT     (1 << 10)
-
-static void fpga_cs_high() {
-    GPIO_PORT2_SET = FPGA_CS_BIT;
-}
-
-static void fpga_cs_low() {
-    GPIO_PORT2_CLR = FPGA_CS_BIT;
-}
-
-static void fpga_cs_output() {
-    GPIO_PORT2_DIR |= FPGA_CS_BIT;
-}
-
-// Transfer one byte via SSP1, return received byte
-static uint8_t ssp1_transfer_byte(uint8_t data) {
-    // Wait for TX FIFO not full
-    while ((SSP1_SR & SSP_SR_TNF) == 0) {}
-    SSP1_DR = data;
-    // Wait for not busy
-    while (SSP1_SR & SSP_SR_BSY) {}
-    // Wait for RX FIFO not empty
-    while ((SSP1_SR & SSP_SR_RNE) == 0) {}
-    return SSP1_DR;
-}
-
-// Configure SSP1 for iCE40 FPGA (Mode 3: CPOL=1, CPHA=1, 8-bit)
-static void ssp1_config_fpga_mode() {
-    SSP1_CR1 = 0;  // Disable SSP1
-    // Mode 3: CPOL=1 (bit 6), CPHA=1 (bit 7), 8-bit (DSS=7), SCR=21
-    SSP1_CR0 = 7 | (1 << 6) | (1 << 7) | (21 << 8);
-    SSP1_CPSR = 2;  // Clock prescaler
-    SSP1_CR1 = (1 << 1);  // Enable SSP1
-}
-
-// Configure SSP1 back for MAX2831 (Mode 0: CPOL=0, CPHA=0, 9-bit)
-static void ssp1_config_max2831_mode() {
-    SSP1_CR1 = 0;  // Disable SSP1
-    // Mode 0: CPOL=0, CPHA=0, 9-bit (DSS=8), SCR=24
-    SSP1_CR0 = 8 | (24 << 8);
-    SSP1_CPSR = 2;
-    SSP1_CR1 = (1 << 1);  // Enable SSP1
-}
+/* Use SPI arbiter for FPGA access to keep SPI state consistent.
+ * Direct SSP1 manipulation corrupts the arbiter's cached config,
+ * which then causes MAX5864 SPI transfers to fail. */
 
 uint32_t register_read(const size_t register_number) {
     if (register_number == 0 || register_number > 5) return 0xFF;
 
-    // Ensure CS is output and deselected
-    fpga_cs_output();
-    fpga_cs_high();
+    // SPI protocol for iCE40 read: [reg & 0x7F, 0x00, 0x00] -> value in byte 3
+    std::array<uint8_t, 3> cmd = {
+        static_cast<uint8_t>(register_number & 0x7F),
+        0x00,
+        0x00
+    };
+    ssp1_target_fpga.transfer(cmd.data(), cmd.size());
 
-    // Switch to FPGA SPI mode
-    ssp1_config_fpga_mode();
-
-    // CS low
-    fpga_cs_low();
-
-    // SPI protocol: [reg & 0x7F, 0x00, 0x00] -> value in byte 3
-    ssp1_transfer_byte(register_number & 0x7F);
-    ssp1_transfer_byte(0x00);
-    uint8_t value = ssp1_transfer_byte(0x00);
-
-    // CS high
-    fpga_cs_high();
-
-    // Switch back to MAX2831 mode
-    ssp1_config_max2831_mode();
-
-    return value;
+    return cmd[2];  // Value is in the third byte
 }
 
 void register_write(const size_t register_number, uint32_t value) {
     if (register_number == 0 || register_number > 5) return;
 
-    // Ensure CS is output and deselected
-    fpga_cs_output();
-    fpga_cs_high();
-
-    // Switch to FPGA SPI mode
-    ssp1_config_fpga_mode();
-
-    // CS low
-    fpga_cs_low();
-
-    // SPI protocol: [(reg | 0x80), value, 0x00]
-    ssp1_transfer_byte((register_number & 0x7F) | 0x80);
-    ssp1_transfer_byte(value);
-    ssp1_transfer_byte(0x00);
-
-    // CS high
-    fpga_cs_high();
-
-    // Switch back to MAX2831 mode
-    ssp1_config_max2831_mode();
+    // SPI protocol for iCE40 write: [(reg | 0x80), value, 0x00]
+    std::array<uint8_t, 3> cmd = {
+        static_cast<uint8_t>((register_number & 0x7F) | 0x80),
+        static_cast<uint8_t>(value),
+        0x00
+    };
+    ssp1_target_fpga.transfer(cmd.data(), cmd.size());
 }
 
 void init() {
-    // Configure FPGA CS GPIO as output, initially deselected
-    fpga_cs_output();
-    fpga_cs_high();
+    /* Configure FPGA CS GPIO as output via the GPIO interface.
+     * The SPI arbiter handles CS automatically during transfers,
+     * but we ensure the pin is properly configured. */
+    gpio_fpga_select.output();
+    gpio_fpga_select.set();  // CS high (deselected)
 
     // Initialize FPGA registers after bitstream load
     // DC_BLOCK (bit 0) must be enabled for RX to work
     register_write(1, 0x01);  // CTRL: DC_BLOCK=1
-    register_write(2, 0x00);  // RX_DECIM: no decimation
+    register_write(2, 0x01);  // RX_DECIM: decimation by 2 (n=1)
     register_write(3, 0x00);  // TX_CTRL: NCO disabled
     register_write(4, 0x00);  // TX_INTRP: no interpolation
     register_write(5, 0x00);  // TX_PSTEP: zero phase step
@@ -493,6 +413,32 @@ void init() {
 
 } /* namespace fpga */
 #endif
+
+namespace sgpio {
+
+/* SGPIO register map for debug viewing
+ * We expose key registers for diagnosing data flow issues.
+ * Register numbers map to:
+ * 0: CTRL_ENABLE   - Which slices are enabled
+ * 1: GPIO_INREG    - GPIO input register (data pins state)
+ * 2: GPIO_OUTREG   - GPIO output register (direction, disable, etc)
+ * 3: GPIO_OENREG   - GPIO output enable register
+ * 4: STATUS_1      - Exchange interrupt status (slice A = bit 0)
+ * 5: REG_SS[0]     - Shadow register slice A (current sample data)
+ */
+uint32_t register_read(const size_t register_number) {
+    switch (register_number) {
+        case 0: return LPC_SGPIO->CTRL_ENABLE;
+        case 1: return LPC_SGPIO->GPIO_INREG;
+        case 2: return LPC_SGPIO->GPIO_OUTREG;
+        case 3: return LPC_SGPIO->GPIO_OENREG;
+        case 4: return LPC_SGPIO->STATUS_1;
+        case 5: return LPC_SGPIO->REG_SS[0];
+        default: return 0xFFFFFFFF;
+    }
+}
+
+} /* namespace sgpio */
 
 } /* namespace debug */
 

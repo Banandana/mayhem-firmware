@@ -96,6 +96,7 @@ typedef enum {
 #ifdef PRALINE
     CT_FPGA,
 #endif
+    CT_SGPIO,
 } chip_type_t;
 
 struct RegistersWidgetConfig {
@@ -375,6 +376,67 @@ private:
                 "Exit"
         };
 };*/
+
+/* Radio Signal Path Diagnostics View
+ * Shows status of each component in the RX/TX signal chain:
+ * Antenna -> RF Path -> RFFC5072 -> MAX283x -> MAX5864 -> FPGA -> SGPIO -> MCU
+ */
+class RadioDiagnosticsView : public View {
+   public:
+    RadioDiagnosticsView(NavigationView& nav);
+
+    void focus() override;
+    std::string title() const override { return "Radio Diag"; };
+
+   private:
+    NavigationView& nav_;
+
+    void update_status();
+
+    Text text_title{{0, 0, 240, 16}, "=== Signal Path Status ==="};
+
+    Text text_lbl_rffc{{0, 20, 140, 16}, "RFFC5072 (1st IF):"};
+    Text text_rffc_status{{144, 20, 96, 16}, "---"};
+
+    Text text_lbl_max{{0, 36, 140, 16}, "MAX283x (2nd IF):"};
+    Text text_max_status{{144, 36, 96, 16}, "---"};
+
+    Text text_lbl_adc{{0, 52, 140, 16}, "MAX5864 (ADC):"};
+    Text text_adc_status{{144, 52, 96, 16}, "---"};
+
+    Text text_lbl_fpga{{0, 68, 140, 16}, "FPGA/CPLD:"};
+    Text text_fpga_status{{144, 68, 96, 16}, "---"};
+
+    Text text_lbl_sgpio{{0, 84, 140, 16}, "SGPIO:"};
+    Text text_sgpio_status{{144, 84, 96, 16}, "---"};
+
+    Text text_lbl_clock{{0, 100, 140, 16}, "Si5351 Clocks:"};
+    Text text_clock_status{{144, 100, 96, 16}, "---"};
+
+    Text text_regs_title{{0, 124, 240, 16}, "=== Key Registers ==="};
+
+    Text text_lbl_rffc_reg{{0, 144, 80, 16}, "RFFC R0:"};
+    Text text_rffc_reg{{80, 144, 160, 16}, "---"};
+
+    Text text_lbl_max_reg{{0, 160, 80, 16}, "MAX R0:"};
+    Text text_max_reg{{80, 160, 160, 16}, "---"};
+
+    Text text_lbl_fpga_reg{{0, 176, 80, 16}, "FPGA:"};
+    Text text_fpga_reg{{80, 176, 160, 16}, "---"};
+
+    Text text_lbl_sgpio_reg{{0, 192, 80, 16}, "SGPIO:"};
+    Text text_sgpio_reg{{80, 192, 160, 16}, "---"};
+
+    Text text_test_result{{0, 220, 240, 32}, ""};
+
+    Button button_refresh{
+        {8, 280, 72, 24},
+        "Refresh"};
+
+    Button button_done{
+        {168, 280, 64, 24},
+        "Done"};
+};
 
 class DebugPeripheralsMenuView : public BtnGridView {
    public:

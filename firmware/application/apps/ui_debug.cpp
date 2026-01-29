@@ -152,6 +152,8 @@ uint32_t RegistersWidget::reg_read(const uint32_t register_number) {
             case CT_FPGA:
                 return radio::debug::fpga::register_read(register_number);
 #endif
+            case CT_SGPIO:
+                return radio::debug::sgpio::register_read(register_number);
         }
     }
     return 0xFFFF;
@@ -184,6 +186,9 @@ void RegistersWidget::reg_write(const uint32_t register_number, const uint32_t v
                 radio::debug::fpga::register_write(register_number, value);
                 break;
 #endif
+            case CT_SGPIO:
+                // SGPIO registers are read-only for debug purposes
+                break;
         }
     }
 }
@@ -378,6 +383,121 @@ void DebugControlsView::focus() {
     switches_widget.focus();
 }
 
+/* RadioDiagnosticsView **************************************************/
+
+RadioDiagnosticsView::RadioDiagnosticsView(NavigationView& nav)
+    : nav_(nav) {
+    add_children({
+        &text_title,
+        &text_lbl_rffc, &text_rffc_status,
+        &text_lbl_max, &text_max_status,
+        &text_lbl_adc, &text_adc_status,
+        &text_lbl_fpga, &text_fpga_status,
+        &text_lbl_sgpio, &text_sgpio_status,
+        &text_lbl_clock, &text_clock_status,
+        &text_regs_title,
+        &text_lbl_rffc_reg, &text_rffc_reg,
+        &text_lbl_max_reg, &text_max_reg,
+        &text_lbl_fpga_reg, &text_fpga_reg,
+        &text_lbl_sgpio_reg, &text_sgpio_reg,
+        &text_test_result,
+        &button_refresh,
+        &button_done,
+    });
+
+    // Set title colors
+    text_title.set_style(Theme::getInstance()->fg_yellow);
+    text_regs_title.set_style(Theme::getInstance()->fg_yellow);
+
+#ifdef PRALINE
+    text_lbl_fpga.set("FPGA (iCE40):");
+#else
+    text_lbl_fpga.set("CPLD:");
+#endif
+
+    button_refresh.on_select = [this](Button&) {
+        update_status();
+    };
+
+    button_done.on_select = [&nav](Button&) {
+        nav.pop();
+    };
+
+    // Initial status update
+    update_status();
+}
+
+void RadioDiagnosticsView::focus() {
+    button_refresh.focus();
+}
+
+void RadioDiagnosticsView::update_status() {
+    // Read RFFC5072 register 0 to check if it responds
+    uint32_t rffc_reg0 = radio::debug::first_if::register_read(0);
+    bool rffc_ok = (rffc_reg0 != 0x0000) && (rffc_reg0 != 0xFFFF);
+    text_rffc_status.set(rffc_ok ? "OK" : "FAIL");
+    text_rffc_status.set_style(rffc_ok ? Theme::getInstance()->fg_green : Theme::getInstance()->fg_red);
+    text_rffc_reg.set(to_string_hex(rffc_reg0, 4));
+
+    // Read MAX283x register 0 to check if it responds
+    uint32_t max_reg0 = radio::debug::second_if::register_read(0);
+    bool max_ok = (max_reg0 != 0x0000) && (max_reg0 != 0x3FFF);
+    text_max_status.set(max_ok ? "OK" : "FAIL");
+    text_max_status.set_style(max_ok ? Theme::getInstance()->fg_green : Theme::getInstance()->fg_red);
+    text_max_reg.set(to_string_hex(max_reg0, 4));
+
+    // MAX5864 has no readback - assume OK if other SPI works
+    text_adc_status.set("(no readback)");
+    text_adc_status.set_style(Theme::getInstance()->fg_medium);
+
+#ifdef PRALINE
+    // Read FPGA control register
+    uint32_t fpga_ctrl = radio::debug::fpga::register_read(1);
+    bool fpga_ok = (fpga_ctrl != 0xFF);  // 0xFF = not responding
+    bool dc_block = (fpga_ctrl & 0x01) != 0;
+    text_fpga_status.set(fpga_ok ? (dc_block ? "OK DC_BLK" : "OK NO_DC") : "FAIL");
+    text_fpga_status.set_style(fpga_ok ? Theme::getInstance()->fg_green : Theme::getInstance()->fg_red);
+
+    // Show all FPGA registers
+    uint32_t fpga_r2 = radio::debug::fpga::register_read(2);
+    uint32_t fpga_r3 = radio::debug::fpga::register_read(3);
+    text_fpga_reg.set("C:" + to_string_hex(fpga_ctrl, 2) +
+                      " D:" + to_string_hex(fpga_r2, 2) +
+                      " T:" + to_string_hex(fpga_r3, 2));
+#else
+    text_fpga_status.set("(CPLD)");
+    text_fpga_status.set_style(Theme::getInstance()->fg_medium);
+    text_fpga_reg.set("N/A");
+#endif
+
+    // Check SGPIO status
+    uint32_t sgpio_enable = radio::debug::sgpio::register_read(0);  // CTRL_ENABLE
+    uint32_t sgpio_status = radio::debug::sgpio::register_read(4);  // STATUS_1
+    bool sgpio_ok = (sgpio_enable != 0);
+    text_sgpio_status.set(sgpio_ok ? "ENABLED" : "DISABLED");
+    text_sgpio_status.set_style(sgpio_ok ? Theme::getInstance()->fg_green : Theme::getInstance()->fg_orange);
+    text_sgpio_reg.set("EN:" + to_string_hex(sgpio_enable, 4) +
+                       " ST:" + to_string_hex(sgpio_status, 4));
+
+    // Clock status - check if Si5351 is configured
+    // We can't easily read back clock status, so just show assumed state
+    text_clock_status.set("(assumed OK)");
+    text_clock_status.set_style(Theme::getInstance()->fg_medium);
+
+    // Summary
+    bool all_ok = rffc_ok && max_ok;
+#ifdef PRALINE
+    all_ok = all_ok && fpga_ok;
+#endif
+    if (all_ok) {
+        text_test_result.set("Peripherals responding. Try RX app.");
+        text_test_result.set_style(Theme::getInstance()->fg_green);
+    } else {
+        text_test_result.set("Check failed peripherals above.");
+        text_test_result.set_style(Theme::getInstance()->fg_red);
+    }
+}
+
 /* DebugPeripheralsMenuView **********************************************/
 
 DebugPeripheralsMenuView::DebugPeripheralsMenuView(NavigationView& nav)
@@ -400,6 +520,7 @@ void DebugPeripheralsMenuView::on_populate() {
 #else
         {max283x, Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_peripherals_details, [this, max283x]() { nav_.push<RegistersView>(max283x, RegistersWidgetConfig{CT_MAX283X, 32, 32, 10}); }},
 #endif
+        {"SGPIO", Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_peripherals_details, [this]() { nav_.push<RegistersView>("SGPIO", RegistersWidgetConfig{CT_SGPIO, 6, 6, 16}); }},
         {si5351x, Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_peripherals_details, [this, si5351x]() { nav_.push<RegistersView>(si5351x, RegistersWidgetConfig{CT_SI5351, 188, 96, 8}); }},
         {audio::debug::codec_name(), Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_peripherals_details, [this]() { nav_.push<RegistersView>(audio::debug::codec_name(), RegistersWidgetConfig{CT_AUDIO, audio::debug::reg_count(), audio::debug::reg_count(), audio::debug::reg_bits()}); }},
     });
@@ -436,6 +557,7 @@ void DebugMenuView::on_populate() {
         add_items({{"..", ui::Theme::getInstance()->fg_light->foreground, &bitmap_icon_previous, [this]() { nav_.pop(); }}});
     }
     add_items({
+        {"Radio Diag", ui::Theme::getInstance()->fg_yellow->foreground, &bitmap_icon_peripherals, [this]() { nav_.push<RadioDiagnosticsView>(); }},
         {"Buttons Test", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_controls, [this]() { nav_.push<DebugControlsView>(); }},
         {"M0 Stack Dump", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_memory, [this]() { stack_dump(); }},
         {"Memory Dump", ui::Theme::getInstance()->fg_darkcyan->foreground, &bitmap_icon_memory, [this]() { nav_.push<DebugMemoryDumpView>(); }},
